@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>По следам истории — точки на карте</title>
+    <style>
+        body { margin:0; padding:20px; font-family: Arial, sans-serif; background: #f0f0f0; }
+        h1 { text-align: center; color: #1e3d7a; }
+        .map-container { 
+            width: 100%; 
+            max-width: 1200px; 
+            height: 90vh; 
+            margin: 20px auto; 
+            border: 3px solid #1e3d7a; 
+            border-radius: 10px; 
+            overflow: hidden;
+            box-shadow: 0 0 20px rgba(0,0,0,0.3);
+        }
+    </style>
+</head>
+<body>
+    <h1>По следам истории — 09 августа 2025</h1>
+    <div class="map-container">
+        {{ map_html | safe }}
+    </div>
+</body>
+</html>
