@@ -9,22 +9,19 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && \
 
 WORKDIR /app
 
-# зависимости
-COPY requirements.txt .
-
+# Ставим нужные Python-библиотеки напрямую
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir Flask Pillow beautifulsoup4
 
-# код и файлы
+# Копируем код и файлы
 COPY . .
 
-# пользователь (опционально)
+# Пользователь (можно оставить как есть)
 RUN groupadd --gid 2000 app && \
     useradd --uid 2000 --gid 2000 -m -d /app app
 USER app
 
-# важно: именно этот порт будет слушать Nginx (по доке — 8080 по умолчанию)
+# Порт и команда запуска
 EXPOSE 8080
-
-# если файл main.py и объект app
+# если файл main.py и объект app = Flask(__name__)
 CMD ["gunicorn", "main:app", "--bind", "0.0.0.0:8080", "--timeout", "60"]
