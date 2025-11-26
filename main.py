@@ -85,7 +85,8 @@ def load_participants_from_html():
             path = []
             leg_times = []
 
-            for cell in cells[10:]:
+            # Обрабатываем все ячейки с КП (начиная с 10-й)
+            for i, cell in enumerate(cells[10:]):
                 text = cell.get_text(separator="\n", strip=True)
                 lines = [l.strip() for l in text.split("\n") if l.strip()]
                 if len(lines) < 1: continue
@@ -96,7 +97,18 @@ def load_participants_from_html():
                 kp = kp_match.group(1)
                 if kp not in ["С1", "Ф1"] and not kp.isdigit(): continue
 
-                leg_time = lines[1] if len(lines) > 1 else "-"
+                # Для ПЕРВОГО КП (ячейка #1) время - это общее время до КП
+                if i == 0:  # Первая ячейка с КП
+                    # Извлекаем время из формата "3:18[77]"
+                    time_match = re.search(r'^(\d+:\d+)\[', lines[0])
+                    if time_match:
+                        leg_time = time_match.group(1)  # Это время от старта до первого КП
+                    else:
+                        leg_time = "-"
+                else:
+                    # Для остальных КП - вторая строка это время перегона
+                    leg_time = lines[1] if len(lines) > 1 else "-"
+
                 path.append(kp)
                 leg_times.append(leg_time)
 
@@ -317,16 +329,17 @@ def index():
             }});
             pathLine.setAttribute('d', d);
 
-            // === ИДЕАЛЬНЫЕ СПЛИТЫ ===
+            // === ИСПРАВЛЕННЫЕ СПЛИТЫ ===
             let table = '<table id="splits-table"><tr><th>№</th><th>КП</th><th>Перегон</th><th>Общее</th></tr>';
             let totalSec = 0;
 
             // Старт
-            table += '<tr class="split-row"><td></td><td>СТАРТ</td><td>—</td><td>0:00</td></tr>';
+            table += '<tr class="split-row"><td></td><td>СТАРТ (С1)</td><td>—</td><td>0:00</td></tr>';
 
-            // КП
+            // КП - ИСПРАВЛЕННАЯ ИНДЕКСАЦИЯ
             for (let i = 1; i < path.length - 1; i++) {{
                 const kp = path[i];
+                // legTimes[i-1] - время перегона от предыдущего КП до текущего
                 const legTime = (i - 1 < legTimes.length) ? legTimes[i - 1] : "-";
 
                 if (legTime && legTime !== "-" && legTime.includes(":")) {{
@@ -341,30 +354,35 @@ def index():
                 </tr>`;
             }}
 
-            // ФИНИШ — из результата!
-            let finishLeg = "—";
+            // ФИНИШ - ПРАВИЛЬНЫЙ РАСЧЕТ
+            let finishLegTime = "—";
             let finishTotal = "—";
+            let lastKpTotalSec = totalSec; // Сохраняем общее время на последнем КП
 
             if (resultStr && resultStr.includes(":")) {{
-                finishTotal = resultStr;
                 const resultSec = timeToSec(resultStr);
-
-                if (totalSec > 0 && resultSec >= totalSec) {{
-                    const legSec = resultSec - totalSec;
-                    finishLeg = secToTime(legSec);
+                finishTotal = resultStr;
+                
+                // Рассчитываем время перегона на финиш: общее время минус время на последнем КП
+                if (resultSec >= lastKpTotalSec) {{
+                    const finishLegSec = resultSec - lastKpTotalSec;
+                    finishLegTime = secToTime(finishLegSec);
                 }}
             }}
 
             table += `<tr class="split-row">
                 <td></td>
                 <td style="font-weight:bold;color:#ff6666">ФИНИШ</td>
-                <td style="font-weight:bold">${{finishLeg}}</td>
+                <td style="font-weight:bold">${{finishLegTime}}</td>
                 <td style="font-weight:bold;color:#ff6666">${{finishTotal}}</td>
             </tr></table>`;
 
             splitsDiv.innerHTML = table;
 
-        }} catch(e) {{ console.error(e); splitsDiv.innerHTML = "Ошибка данных"; }}
+        }} catch(e) {{ 
+            console.error(e); 
+            splitsDiv.innerHTML = "Ошибка данных: " + e.message; 
+        }}
     }}
 
     function highlightKP(id) {{
