@@ -1,4 +1,4 @@
-from flask import Flask, render_template_string
+from flask import Flask, render_template_string, send_from_directory, jsonify
 from PIL import Image
 import io, base64, json, re, os
 from bs4 import BeautifulSoup
@@ -33,7 +33,6 @@ def load_group_kps():
             group = name.strip()
             kps = [kp.strip() for kp in kps_str.split() if kp.strip() and kp.strip() not in ["С1", "Ф1"]]
             group_kps[group] = kps
-    print(f"[INFO] Загружено групп: {len(group_kps)}")
 
 load_group_kps()
 
@@ -123,8 +122,7 @@ def parse_splits_html():
                     "result": result
                 })
 
-    total = sum(len(v) for v in participants.values())
-    print(f"[SUCCESS] Загружено {total} участников из {len(participants)} групп")
+    print(f"[SUCCESS] Загружено {sum(len(v) for v in participants.values())} участников")
     return participants
 
 def load_participants():
@@ -149,7 +147,6 @@ def index():
     if not participants:
         return "<h1 style='color:#c40000;text-align:center;margin-top:100px'>Нет данных<br><small>Проверьте splits.html и groups.txt</small></h1>"
 
-    # Все КП генерируем — чтобы можно было показывать по группе
     svg = []
     for kp, p in points.items():
         if kp == "Ф1":
@@ -163,13 +160,9 @@ def index():
     first = next(iter(participants), None)
     for g, runners in participants.items():
         open_class = "open" if g == first else ""
-        items = "".join(
-            f'<div class="person" data-path="{base64.b64encode(json.dumps(r["path"]).encode()).decode()}" '
-            f'data-leg="{base64.b64encode(json.dumps(r["leg_times"]).encode()).decode()}" '
-            f'data-result="{base64.b64encode(r["result"].encode()).decode()}" '
-            f'data-group="{g}" onclick="selectRunner(this)">{r["name"]}</div>'
-            for r in runners
-        )
+        items = ""
+        for i, r in enumerate(runners):
+            items += f'<div class="person" data-id="{i}" data-group="{g}" onclick="selectRunner(this)">{r["name"]}</div>'
         acc += f'<div class="group"><div class="group-header {open_class}" onclick="toggleGroup(this,\'{g}\')">{g} ({len(runners)})</div><div class="person-list {open_class}">{items}</div></div>'
 
     html = f'''<!DOCTYPE html>
@@ -195,7 +188,7 @@ body.collapsed-left #map-container{{margin-left:0}}body.collapsed-right #map-con
 #splits-table tr.active td{{background:#c40000 !important;color:#fff !important}}
 .kp circle{{stroke:#ff0000;stroke-width:4;display:none}}
 .kp text{{fill:#ff0000;font-weight:900;stroke:#fff;stroke-width:1.5;display:none}}
-.kp.visible circle, .kp.visible text{{display:block}}
+.kp.visible circle,.kp.visible text{{display:block}}
 .kp.own circle{{stroke:#ff0000;stroke-width:10}}
 .kp.alien circle{{stroke:#0088ff;stroke-width:10}}
 .kp.highlighted circle{{stroke:yellow;stroke-width:16;filter:drop-shadow(0 0 12px yellow)}}
@@ -207,19 +200,20 @@ body.collapsed-left #map-container{{margin-left:0}}body.collapsed-right #map-con
 <script>
 const points = {json.dumps(points, ensure_ascii=False)};
 const groupKps = {json.dumps(group_kps, ensure_ascii=False)};
+let participants = null;
 const mapDiv = document.getElementById('map');
 const img = document.getElementById('mapimg');
 const pathLine = document.getElementById('path');
 const splitsDiv = document.getElementById('splits-info');
 let scale = 1, posX = 0, posY = 0;
-let currentGroup = null;
+
+fetch('data.json').then(r => r.json()).then(d => participants = d);
 
 function fitMap() {{
-    const l = document.getElementById('left').classList.contains('collapsed') ? 0 : 340;
-    const r = document.getElementById('right').classList.contains('collapsed') ? 0 : 340;
-    scale = Math.min((window.innerWidth - l - r) / img.naturalWidth, window.innerHeight / img.naturalHeight) * 0.94;
-    posX = posY = 0;
-    update();
+    const l = document.getElementById('left').classList.contains('collapsed')?0:340;
+    const r = document.getElementById('right').classList.contains('collapsed')?0:340;
+    scale = Math.min((innerWidth-l-r)/img.naturalWidth, innerHeight/img.naturalHeight)*0.94;
+    posX = posY = 0; update();
 }}
 function update() {{ mapDiv.style.transform = `translate(${{posX}}px,${{posY}}px) scale(${{scale}})`; }}
 
@@ -232,50 +226,40 @@ document.addEventListener('mouseup', () => {{ dragging = false; }});
 function togglePanel(s) {{ document.getElementById(s).classList.toggle('collapsed'); fitMap(); }}
 
 function clearMap() {{
-    document.querySelectorAll('.kp').forEach(g => {{
-        g.classList.remove('visible','own','alien','highlighted');
-    }});
+    document.querySelectorAll('.kp').forEach(g => g.classList.remove('visible','own','alien','highlighted'));
     document.querySelectorAll('.split-row').forEach(r => r.classList.remove('active'));
     pathLine.setAttribute('d', '');
     splitsDiv.innerHTML = 'Выберите участника';
     document.querySelectorAll('.person').forEach(p => p.classList.remove('active'));
 }}
 
-function toggleGroup(header, groupName) {{
-    const isOpen = header.classList.contains('open');
+function toggleGroup(h, group) {{
+    const o = h.classList.contains('open');
     document.querySelectorAll('.group-header,.person-list').forEach(x => x.classList.remove('open'));
     clearMap();
-    if (!isOpen) {{
-        header.classList.add('open');
-        header.nextElementSibling.classList.add('open');
-        currentGroup = groupName;
-        // Показать все КП группы обычными красными
-        const ownKps = new Set(groupKps[groupName] || []);
+    if (!o) {{
+        h.classList.add('open');
+        h.nextElementSibling.classList.add('open');
         document.querySelectorAll('.kp').forEach(g => {{
             const id = g.id.replace('kp_', '');
-            if (id === 'С1' || id === 'Ф1' || ownKps.has(id)) {{
-                g.classList.add('visible');
-            }}
+            if (id === 'С1' || id === 'Ф1' || (groupKps[group] && groupKps[group].includes(id))) g.classList.add('visible');
         }});
-    }} else {{
-        currentGroup = null;
     }}
 }}
 
-function timeToSec(t) {{ if (!t || t === '-' || !t.includes(':')) return 0; const a = t.split(':').map(Number); return a.length === 3 ? a[0]*3600 + a[1]*60 + (a[2]||0) : a[0]*60 + a[1]; }}
-function secToTime(s) {{ if (s < 3600) {{ const m = Math.floor(s / 60), sec = s % 60; return m + ':' + sec.toString().padStart(2,'0'); }} const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60; return h + ':' + m.toString().padStart(2,'0') + ':' + sec.toString().padStart(2,'0'); }}
-
 function selectRunner(el) {{
+    if (!participants) return;
     clearMap();
     el.classList.add('active');
-    const path = JSON.parse(atob(el.dataset.path));
-    const leg = JSON.parse(atob(el.dataset.leg));
-    const result = atob(el.dataset.result).trim();
     const group = el.dataset.group;
+    const id = parseInt(el.dataset.id);
+    const r = participants[group][id];
+    const path = r.path;
+    const leg = r.leg_times;
+    const result = r.result;
     const ownKps = new Set(groupKps[group] || []);
     const taken = new Set(path.filter(k => k !== 'С1' && k !== 'Ф1'));
 
-    // Показываем: С1, Ф1, все свои КП (взятые и невзятые), чужие — только если взяты
     document.querySelectorAll('.kp').forEach(g => {{
         const id = g.id.replace('kp_', '');
         if (id === 'С1' || id === 'Ф1') {{
@@ -294,12 +278,10 @@ function selectRunner(el) {{
         if (!points[k]) return;
         const c = {{x: points[k].cx, y: points[k].cy, r: points[k].r || 30}};
         if (prev) {{
-            const dx = c.x - prev.x, dy = c.y - prev.y, dist = Math.hypot(dx, dy);
+            const dx = c.x-prev.x, dy = c.y-prev.y, dist = Math.hypot(dx,dy);
             if (dist > prev.r + c.r + 10) {{
-                const ex = prev.x + dx * (prev.r + 5) / dist;
-                const ey = prev.y + dy * (prev.r + 5) / dist;
-                const ix = c.x - dx * (c.r + 5) / dist;
-                const iy = c.y - dy * (c.r + 5) / dist;
+                const ex = prev.x + dx*(prev.r+5)/dist, ey = prev.y + dy*(prev.r+5)/dist;
+                const ix = c.x - dx*(c.r+5)/dist, iy = c.y - dy*(c.r+5)/dist;
                 d += ` M ${{ex}},${{ey}} L ${{ix}},${{iy}}`;
             }}
         }}
@@ -307,21 +289,15 @@ function selectRunner(el) {{
     }});
     pathLine.setAttribute('d', d);
 
-    let tbl = '<table id="splits-table"><tr><th>№</th><th>КП</th><th>Перегон</th><th>Общее</th></tr>';
-    tbl += '<tr class="split-row"><td></td><td>СТАРТ (С1)</td><td>—</td><td>0:00</td></tr>';
-    let total = 0;
+    let tbl = '<table id="splits-table"><tr><th>№</th><th>КП</th><th>Перегон</th><th>Общее</th></tr><tr class="split-row"><td></td><td>СТАРТ (С1)</td><td>—</td><td>0:00</td></tr>', total = 0;
     for (let i = 1; i < path.length - 1; i++) {{
-        const kp = path[i];
-        const legTime = (i - 1 < leg.length) ? leg[i - 1] : '-';
+        const kp = path[i], legTime = (i-1 < leg.length) ? leg[i-1] : '-';
         if (legTime && legTime !== '-' && legTime.includes(':')) total += timeToSec(legTime);
-        tbl += `<tr onclick="highlightKP('${{kp}}')" class="split-row"><td>${{i}}</td><td>${{kp}}</td><td>${{legTime}}</td><td>${{total > 0 ? secToTime(total) : '—'}}</td></tr>`;
+        tbl += `<tr onclick="highlightKP('${{kp}}')" class="split-row"><td>${{i}}</td><td>${{kp}}</td><td>${{legTime}}</td><td>${{total>0?secToTime(total):'—'}}</td></tr>`;
     }}
-    let finishLeg = '—', finishTotal = result;
-    if (result.includes(':')) {{
-        const resultSec = timeToSec(result);
-        if (resultSec >= total) finishLeg = secToTime(resultSec - total);
-    }}
-    tbl += `<tr class="split-row"><td></td><td style="font-weight:bold;color:#ff6666">ФИНИШ</td><td style="font-weight:bold">${{finishLeg}}</td><td style="font-weight:bold;color:#ff6666">${{finishTotal}}</td></tr></table>`;
+    let fl = '—', ft = result;
+    if (result.includes(':')) {{ const rs = timeToSec(result); if (rs >= total) fl = secToTime(rs-total); }}
+    tbl += `<tr class="split-row"><td></td><td style="font-weight:bold;color:#ff6666">ФИНИШ</td><td style="font-weight:bold">${{fl}}</td><td style="font-weight:bold;color:#ff6666">${{ft}}</td></tr></table>`;
     splitsDiv.innerHTML = tbl;
 }}
 
@@ -333,10 +309,21 @@ function highlightKP(id) {{
     document.querySelectorAll('.split-row').forEach(r => {{ if (r.cells[1].textContent === id) r.classList.add('active'); }});
 }}
 
-window.onload = () => {{ fitMap(); window.onresize = fitMap; const f = document.querySelector('.group-header'); if (f) toggleGroup(f, f.textContent.split(' ')[0]); }};
+function timeToSec(t) {{ if (!t || t === '-' || !t.includes(':')) return 0; const a = t.split(':').map(Number); return a.length === 3 ? a[0]*3600 + a[1]*60 + (a[2]||0) : a[0]*60 + a[1]; }}
+function secToTime(s) {{ if (s < 3600) return Math.floor(s/60) + ':' + (s%60).toString().padStart(2,'0'); const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=s%60; return h+':'+m.toString().padStart(2,'0')+':'+sec.toString().padStart(2,'0'); }}
+
+window.onload = () => {{ fitMap(); window.onresize = fitMap; }};
 </script></body></html>'''
+
+    # Сохраняем данные отдельно
+    with open("static/data.json", "w", encoding="utf-8") as f:
+        json.dump(participants_data, f, ensure_ascii=False)
 
     return render_template_string(html)
 
+@app.route('/data.json')
+def data_json():
+    return send_from_directory('static', 'data.json')
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=False)
