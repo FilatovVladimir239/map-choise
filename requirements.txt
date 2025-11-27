@@ -1,6 +1,8 @@
 Flask
 Pillow
 beautifulsoup4
+lxml
+
 
 
 
