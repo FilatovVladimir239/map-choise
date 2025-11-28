@@ -44,7 +44,7 @@ def load_all_points():
     px_per_mm_x = w / A4_WIDTH_MM
     px_per_mm_y = h / A4_HEIGHT_MM
     r = 4 * px_per_mm_y
-    offset = 6.5 * px_per_mm_x
+    # Убрал offset - теперь текст будет позиционироваться относительно кружка
     points = {}
     with open(COORDS_FILE, encoding="utf-8") as f:
         for line in f:
@@ -56,7 +56,7 @@ def load_all_points():
                 mm_x, mm_y = map(float, mm.split(","))
                 cx = mm_x * px_per_mm_x
                 cy = h - mm_y * px_per_mm_y
-                points[kp] = {"cx":cx,"cy":cy,"r":r,"tx":cx+offset,"ty":cy+offset}
+                points[kp] = {"cx":cx,"cy":cy,"r":r}
             except: continue
     buf = io.BytesIO()
     im.save(buf, format="PNG")
@@ -150,11 +150,32 @@ def index():
     svg = []
     for kp, p in points.items():
         if kp == "Ф1":
-            svg.append(f'<g id="kp_{kp}" class="kp"><circle cx="{p["cx"]}" cy="{p["cy"]}" r="{p["r"]*1.5}" fill="none"/><text x="{p["tx"]}" y="{p["ty"]}" font-size="36" font-weight="900" text-anchor="middle" dominant-baseline="middle">ФИНИШ</text></g>')
+            # Финиш - двойной кружок (уменьшенный)
+            svg.append(f'''
+                <g id="kp_{kp}" class="kp">
+                    <circle cx="{p["cx"]}" cy="{p["cy"]}" r="{p["r"]*1.3}" fill="none" stroke="#ff0000" stroke-width="6"/>
+                    <circle cx="{p["cx"]}" cy="{p["cy"]}" r="{p["r"]*0.7}" fill="none" stroke="#ff0000" stroke-width="6"/>
+                    <text x="{p["cx"] + p["r"]*1.3 + 8}" y="{p["cy"] + p["r"]*1.3 + 8}" font-size="32" font-weight="900" text-anchor="start" dominant-baseline="hanging" fill="#ff0000" stroke="#fff" stroke-width="1.5">ФИНИШ</text>
+                </g>
+            ''')
         elif kp == "С1":
-            svg.append(f'<g id="kp_{kp}" class="kp"><circle cx="{p["cx"]}" cy="{p["cy"]}" r="{p["r"]}" fill="none"/><text x="{p["tx"]}" y="{p["ty"]}" font-size="40" font-weight="900" text-anchor="middle" dominant-baseline="middle">СТАРТ</text></g>')
+            # Старт - треугольник (уменьшенный)
+            triangle_size = p["r"] * 1.2
+            points_str = f'{p["cx"]},{p["cy"] - triangle_size} {p["cx"] - triangle_size},{p["cy"] + triangle_size} {p["cx"] + triangle_size},{p["cy"] + triangle_size}'
+            svg.append(f'''
+                <g id="kp_{kp}" class="kp">
+                    <polygon points="{points_str}" fill="none" stroke="#ff0000" stroke-width="6"/>
+                    <text x="{p["cx"] + triangle_size + 8}" y="{p["cy"] + triangle_size + 8}" font-size="32" font-weight="900" text-anchor="start" dominant-baseline="hanging" fill="#ff0000" stroke="#fff" stroke-width="1.5">СТАРТ</text>
+                </g>
+            ''')
         else:
-            svg.append(f'<g id="kp_{kp}" class="kp"><circle cx="{p["cx"]}" cy="{p["cy"]}" r="{p["r"]}" fill="none"/><text x="{p["tx"]}" y="{p["ty"]}" font-size="40" font-weight="900" text-anchor="middle" dominant-baseline="middle">{kp}</text></g>')
+            # Обычные КП - кружки
+            svg.append(f'''
+                <g id="kp_{kp}" class="kp">
+                    <circle cx="{p["cx"]}" cy="{p["cy"]}" r="{p["r"]}" fill="none" stroke="#ff0000" stroke-width="4"/>
+                    <text x="{p["cx"] + p["r"] + 8}" y="{p["cy"] + p["r"] + 8}" font-size="40" font-weight="900" text-anchor="start" dominant-baseline="hanging" fill="#ff0000" stroke="#fff" stroke-width="1.5">{kp}</text>
+                </g>
+            ''')
 
     acc = ""
     first = next(iter(participants), None)
@@ -169,12 +190,19 @@ def index():
 <html lang="ru"><head><meta charset="utf-8"><title>По следам истории 2025</title>
 <style>
 body,html{{margin:0;height:100%;overflow:hidden;background:#111;color:#fff;font-family:Arial,sans-serif}}
-#left,#right{{position:fixed;top:0;bottom:0;width:340px;background:#222;padding:20px;overflow-y:auto;z-index:10;transition:.4s}}
+#left,#right{{position:fixed;top:0;bottom:0;width:340px;background:#222;z-index:10;transition:.4s}}
 #left{{left:0}}#right{{right:0}}
-#left.collapsed{{transform:translateX(-340px)}}#right.collapsed{{transform:translateX(340px)}}
+#left.collapsed{{width:0}}#right.collapsed{{width:0}}
+#left-content,#right-content{{padding:20px;height:100%;overflow-y:auto}}
 #map-container{{margin:0 340px;height:100%;display:flex;justify-content:center;align-items:center;background:#000;transition:.4s}}
 body.collapsed-left #map-container{{margin-left:0}}body.collapsed-right #map-container{{margin-right:0}}
-.panel-header{{cursor:pointer;background:#c40000;padding:12px;border-radius:8px;margin-bottom:10px;font-weight:bold}}
+.panel-toggle{{position:fixed;top:50%;z-index:15;background:#c40000;border:none;color:white;width:30px;height:60px;cursor:pointer;font-size:20px;font-weight:bold;display:flex;align-items:center;justify-content:center;transition:.3s}}
+.panel-toggle:hover{{background:#a00}}
+#left-toggle{{left:340px;border-radius:0 8px 8px 0}}
+#right-toggle{{right:340px;border-radius:8px 0 0 8px}}
+body.collapsed-left #left-toggle{{left:0;transform:rotate(180deg)}}
+body.collapsed-right #right-toggle{{right:0;transform:rotate(180deg)}}
+.panel-header{{position:relative;cursor:pointer;background:#c40000;padding:12px;border-radius:8px;margin-bottom:10px;font-weight:bold;min-height:20px}}
 .group-header{{background:#333;padding:12px;border-radius:8px;cursor:pointer;font-weight:bold}}
 .group-header.open{{background:#a00}}
 .person-list{{max-height:0;overflow:hidden;transition:.4s;background:#2a2a2a;margin-top:5px;border-radius:6px}}
@@ -186,17 +214,46 @@ body.collapsed-left #map-container{{margin-left:0}}body.collapsed-right #map-con
 #splits-table th{{background:#333}}
 #splits-table tr:hover td{{background:#444}}
 #splits-table tr.active td{{background:#c40000 !important;color:#fff !important}}
-.kp circle{{stroke:#ff0000;stroke-width:4;display:none}}
-.kp text{{fill:#ff0000;font-weight:900;stroke:#fff;stroke-width:1.5;display:none}}
-.kp.visible circle,.kp.visible text{{display:block}}
+.kp circle,.kp polygon{{display:none}}
+.kp text{{display:none}}
+.kp.visible circle,.kp.visible polygon,.kp.visible text{{display:block}}
 .kp.own circle{{stroke:#ff0000;stroke-width:10}}
+.kp.own polygon{{stroke:#ff0000;stroke-width:10}}
 .kp.alien circle{{stroke:#0088ff;stroke-width:10}}
+.kp.alien polygon{{stroke:#0088ff;stroke-width:10}}
 .kp.highlighted circle{{stroke:yellow;stroke-width:16;filter:drop-shadow(0 0 12px yellow)}}
+.kp.highlighted polygon{{stroke:yellow;stroke-width:16;filter:drop-shadow(0 0 12px yellow)}}
+.control-btn{{position:absolute;top:10px;z-index:20;background:#c40000;border:none;color:white;width:40px;height:40px;border-radius:6px;cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center}}
+.control-btn:hover{{background:#a00}}
+#left-control{{left:10px}}
+#right-control{{right:10px}}
 </style></head><body>
-<div id="left"><div class="panel-header" onclick="togglePanel('left')">Участники</div><div id="accordion">{acc}</div></div>
-<div id="right"><div class="panel-header" onclick="togglePanel('right')">Сплиты</div><div id="splits-info">Выберите участника</div></div>
-<div id="map-container"><div id="map"><img src="data:image/png;base64,{img_b64}" id="mapimg">
-<svg style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none">{"".join(svg)}<path id="path" fill="none" stroke="#ff3366" stroke-width="10" opacity="0.9" stroke-linecap="round"/></svg></div></div>
+<div id="left">
+    <div id="left-content">
+        <div class="panel-header">
+            <span>Участники</span>
+        </div>
+        <div id="accordion">{acc}</div>
+    </div>
+</div>
+<button id="left-toggle" class="panel-toggle" onclick="togglePanel('left')">◀</button>
+
+<div id="right">
+    <div id="right-content">
+        <div class="panel-header">
+            <span>Сплиты</span>
+        </div>
+        <div id="splits-info">Выберите участника</div>
+    </div>
+</div>
+<button id="right-toggle" class="panel-toggle" onclick="togglePanel('right')">▶</button>
+
+<div id="map-container">
+    <button id="left-control" class="control-btn" onclick="togglePanel('left')" title="Участники">☰</button>
+    <button id="right-control" class="control-btn" onclick="togglePanel('right')" title="Сплиты">📊</button>
+    <div id="map"><img src="data:image/png;base64,{img_b64}" id="mapimg">
+    <svg style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none">{"".join(svg)}<path id="path" fill="none" stroke="#ff3366" stroke-width="10" opacity="0.9" stroke-linecap="round"/></svg></div>
+</div>
 <script>
 const points = {json.dumps(points, ensure_ascii=False)};
 const groupKps = {json.dumps(group_kps, ensure_ascii=False)};
@@ -210,8 +267,10 @@ let scale = 1, posX = 0, posY = 0;
 fetch('data.json').then(r => r.json()).then(d => participants = d);
 
 function fitMap() {{
-    const l = document.getElementById('left').classList.contains('collapsed')?0:340;
-    const r = document.getElementById('right').classList.contains('collapsed')?0:340;
+    const leftCollapsed = document.getElementById('left').classList.contains('collapsed');
+    const rightCollapsed = document.getElementById('right').classList.contains('collapsed');
+    const l = leftCollapsed ? 0 : 340;
+    const r = rightCollapsed ? 0 : 340;
     scale = Math.min((innerWidth-l-r)/img.naturalWidth, innerHeight/img.naturalHeight)*0.94;
     posX = posY = 0; update();
 }}
@@ -223,7 +282,23 @@ mapDiv.addEventListener('mousedown', e => {{ if(e.button===0){{ dragging=true; s
 document.addEventListener('mousemove', e => {{ if(dragging){{ posX=e.clientX-sx; posY=e.clientY-sy; update(); }}}});
 document.addEventListener('mouseup', () => {{ dragging = false; }});
 
-function togglePanel(s) {{ document.getElementById(s).classList.toggle('collapsed'); fitMap(); }}
+function togglePanel(side) {{
+    const panel = document.getElementById(side);
+    const toggleBtn = document.getElementById(side + '-toggle');
+    const isCollapsed = panel.classList.toggle('collapsed');
+    document.body.classList.toggle(`collapsed-${{side}}`, isCollapsed);
+    
+    // Поворачиваем стрелку
+    if (side === 'left') {{
+        toggleBtn.style.transform = isCollapsed ? 'rotate(180deg)' : 'rotate(0deg)';
+        toggleBtn.style.left = isCollapsed ? '0' : '340px';
+    }} else {{
+        toggleBtn.style.transform = isCollapsed ? 'rotate(180deg)' : 'rotate(0deg)';
+        toggleBtn.style.right = isCollapsed ? '0' : '340px';
+    }}
+    
+    fitMap();
+}}
 
 function clearMap() {{
     document.querySelectorAll('.kp').forEach(g => g.classList.remove('visible','own','alien','highlighted'));
@@ -276,7 +351,11 @@ function selectRunner(el) {{
     let d = '', prev = null;
     path.forEach(k => {{
         if (!points[k]) return;
-        const c = {{x: points[k].cx, y: points[k].cy, r: points[k].r || 30}};
+        let c = {{x: points[k].cx, y: points[k].cy, r: points[k].r || 30}};
+        // Для старта (треугольника) и финиша (двойного круга) увеличиваем радиус для лучшего отображения линии
+        if (k === 'С1') c.r = c.r * 1.2;
+        if (k === 'Ф1') c.r = c.r * 1.3;
+        
         if (prev) {{
             const dx = c.x-prev.x, dy = c.y-prev.y, dist = Math.hypot(dx,dy);
             if (dist > prev.r + c.r + 10) {{
