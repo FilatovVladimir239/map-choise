@@ -1,7 +1,9 @@
 Flask
 Pillow
 beautifulsoup4
+weasyprint
 lxml
+
 
 
 
