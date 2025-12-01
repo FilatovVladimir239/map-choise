@@ -3,6 +3,12 @@ from PIL import Image, ImageDraw, ImageFont
 import io, base64, json, re, os, tempfile
 from bs4 import BeautifulSoup
 import math
+from weasyprint import HTML, CSS
+from weasyprint.text.fonts import FontConfiguration
+import json
+import os
+import urllib.parse
+import base64
 
 app = Flask(__name__)
 
@@ -246,14 +252,13 @@ def create_map_image_with_route(map_image_path, points, visible_kps, path_points
         else:
             # Обычные КП - только контур, без заливки
             if kp_info and kp_info.get('isOwn'):
-                # Свои КП, которые взял спортсмен - красные
-                color = (255, 0, 0)
+                color = "#ff0000"
             elif kp_info and kp_info.get('isAlien'):
-                # Чужие КП, которые взял спортсмен - синие
-                color = (0, 0, 255)
+                color = "#0066ff"
+            elif kp_id in runner_group_kps:
+                color = "#ff0000"        # свои КП группы — всегда ярко-красные
             else:
-                # Свои КП, которые НЕ взял спортсмен - светло-красные
-                color = (255, 100, 100)
+                color = "#ff8888"
                 
             # Рисуем кружок КП (только контур)
             draw.ellipse([x - r, y - r, x + r, y + r], 
@@ -703,168 +708,249 @@ window.onload = () => {{
 @app.route('/export-pdf', methods=['POST'])
 def export_pdf():
     try:
-        from reportlab.pdfgen import canvas
-        from reportlab.lib.pagesizes import A4
-        from reportlab.lib.utils import ImageReader
-        
+        from weasyprint import HTML, CSS
+        from weasyprint.text.fonts import FontConfiguration
+
         data = request.get_json()
-        
-        # Создаем простой маршрут через контрольные точки
-        simple_path_points = []
-        for kp_id in data['path']:
-            if kp_id in data['points']:
-                point = data['points'][kp_id]
-                simple_path_points.append((point['cx'], point['cy']))
-        
-        # Создаем изображение карты с маршрутом
-        map_image = create_map_image_with_route(
-            MAP_IMAGE,
-            data['points'],
-            data['visibleKPs'],
-            simple_path_points,
-            data['name'],
-            data['group'],
-            data['runnerGroupKps']  # Только КП группы спортсмена + взятые чужие
-        )
-        
-        # Сохраняем временное изображение
-        temp_img = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
-        map_image.save(temp_img.name, 'PNG', quality=95)
-        temp_img.close()
-        
-        # Создаем PDF
-        buffer = io.BytesIO()
-        c = canvas.Canvas(buffer, pagesize=A4)
-        
-        # Добавляем заголовок (используем только латиницу для избежания проблем с кодировкой)
-        c.setFont("Helvetica-Bold", 16)
-        c.drawString(50, 800, "Karta marshruta")
-        c.setFont("Helvetica", 12)
-        c.drawString(50, 775, f"Uchastnik: {data['name']}")
-        c.drawString(50, 755, f"Gruppa: {data['group']}")
-        c.drawString(50, 735, f"Rezultat: {data['result']}")
-        c.setFont("Helvetica", 10)
-        c.drawString(50, 715, f"Sgenerirovano: {data['timestamp']}")
-        
-        # Добавляем изображение карты
-        img_width_pdf = 500
-        img_height_pdf = 650
-        c.drawImage(temp_img.name, 50, 50, width=img_width_pdf, height=img_height_pdf)
-        
-        # Удаляем временный файл
-        os.unlink(temp_img.name)
-        
-        # Добавляем таблицу сплитов на следующую страницу
-        c.showPage()
-        c.setFont("Helvetica-Bold", 16)
-        c.drawString(50, 800, "Distantsiya uchastnika")
-        c.setFont("Helvetica", 12)
-        c.drawString(50, 780, f"Uchastnik: {data['name']}")
-        c.drawString(50, 760, f"Gruppa: {data['group']}")
-        
-        # Таблица сплитов с расстояниями
-        c.setFont("Helvetica-Bold", 9)
-        c.drawString(50, 730, "No")
-        c.drawString(65, 730, "KP")
-        c.drawString(85, 730, "Peregon")
-        c.drawString(125, 730, "(m)")  # Заменил на (m)
-        c.drawString(150, 730, "Obshch")
-        c.drawString(180, 730, "Vsego")
-        
-        y_position = 715
-        total = 0
-        path = data['path']
-        leg_times = data['leg_times']
-        
-        # Рассчитываем расстояния с масштабом 75
+        with open(MAP_IMAGE, "rb") as f:
+            map_b64 = base64.b64encode(f.read()).decode()
+        runner           = data['name']
+        group            = data['group']
+        result           = data['result']
+        timestamp        = data['timestamp']
+        path             = data['path']
+        leg_times        = data['leg_times']
+        points           = data['points']
+        visible_kps_data = data['visibleKPs']
+        runner_group_kps = data['runnerGroupKps']
+
+        # --- размеры карты (пиксели) ---
+        points_all, (map_width, map_height), _ = load_all_points()   # получаем актуальные размеры
+
+        # --- масштаб карты 1:7500 → 1 мм = 7.5 м ---
+        SCALE_FACTOR = 7.5
+
+        # --- считаем дистанцию по всем перегонам ---
         distances = []
         total_distance = 0
         for i in range(len(path) - 1):
-            kp1, kp2 = path[i], path[i+1]
-            if kp1 in data['points'] and kp2 in data['points']:
-                p1 = data['points'][kp1]
-                p2 = data['points'][kp2]
-                dx = p1['cx'] - p2['cx']
-                dy = p1['cy'] - p2['cy']
-                distance = math.sqrt(dx*dx + dy*dy) / 75  # масштаб 75
-                distances.append(round(distance))
-                total_distance += round(distance)
+            kp1 = path[i]
+            kp2 = path[i + 1]
+            if kp1 in points and kp2 in points:
+                dx = points[kp2]['mm_x'] - points[kp1]['mm_x']
+                dy = points[kp2]['mm_y'] - points[kp1]['mm_y']
+                dist_mm = (dx*dx + dy*dy) ** 0.5
+                dist_m  = round(dist_mm * SCALE_FACTOR)
+                distances.append(dist_m)
+                total_distance += dist_m
             else:
                 distances.append(0)
-        
-        c.setFont("Helvetica", 9)
-        c.drawString(50, y_position, "")
-        c.drawString(65, y_position, "START")
-        c.drawString(85, y_position, "—")
-        c.drawString(125, y_position, "—")
-        c.drawString(150, y_position, "0:00")
-        c.drawString(180, y_position, "0")
-        y_position -= 15
-        
-        cumulative_distance = 0
-        
-        for i in range(1, len(path) - 1):
-            kp = path[i]
-            leg_time = leg_times[i-1] if (i-1) < len(leg_times) else '-'
-            leg_distance = distances[i-1]
-            cumulative_distance += leg_distance
-            
-            if leg_time and leg_time != '-' and ':' in leg_time:
-                time_parts = leg_time.split(':')
-                if len(time_parts) == 2:
-                    total += int(time_parts[0]) * 60 + int(time_parts[1])
-                elif len(time_parts) == 3:
-                    total += int(time_parts[0]) * 3600 + int(time_parts[1]) * 60 + int(time_parts[2])
-            
-            if total < 3600:
-                total_time = f"{total // 60}:{(total % 60):02d}"
+
+        # --- строим SVG‑элементы (точно как в браузере) ---
+        svg_parts = []
+        for kp_id, p in points.items():
+            cx, cy, r = p['cx'], p['cy'], p.get('r', 20)
+
+            # Видимость КП
+            kp_info = next((k for k in visible_kps_data if k['id'] == kp_id), None)
+            if kp_id not in ('С1', 'Ф1') and not kp_info:
+                continue
+
+            if kp_id == 'С1':
+                size = r * 1.5
+                polygon = f"{cx},{cy-size} {cx-size},{cy+size} {cx+size},{cy+size}"
+                svg_parts.append(f'''
+                    <polygon points="{polygon}" fill="none" stroke="#008800" stroke-width="8"/>
+                    <text x="{cx + size + 10}" y="{cy + size + 10}" font-size="40" fill="#008800" font-weight="bold">С1</text>
+                ''')
+            elif kp_id == 'Ф1':
+                svg_parts.append(f'''
+                    <circle cx="{cx}" cy="{cy}" r="{r*1.5}" fill="none" stroke="#ff0000" stroke-width="8"/>
+                    <circle cx="{cx}" cy="{cy}" r="{r*0.8}" fill="none" stroke="#ff0000" stroke-width="8"/>
+                    <text x="{cx + r*1.5 + 10}" y="{cy + r*1.5 + 10}" font-size="40" fill="#ff0000" font-weight="bold">Ф1</text>
+                ''')
             else:
-                total_time = f"{total // 3600}:{(total % 3600) // 60:02d}:{(total % 60):02d}"
-            
-            c.drawString(50, y_position, str(i))
-            c.drawString(65, y_position, kp)
-            c.drawString(85, y_position, leg_time)
-            c.drawString(125, y_position, f"{leg_distance}")
-            c.drawString(150, y_position, total_time if total > 0 else '—')
-            c.drawString(180, y_position, f"{cumulative_distance}")
-            y_position -= 15
-            
-            if y_position < 50:
-                c.showPage()
-                y_position = 800
-                c.setFont("Helvetica-Bold", 9)
-                c.drawString(50, y_position, "No")
-                c.drawString(65, y_position, "KP")
-                c.drawString(85, y_position, "Peregon")
-                c.drawString(125, y_position, "(m)")
-                c.drawString(150, y_position, "Obshch")
-                c.drawString(180, y_position, "Vsego")
-                y_position -= 15
-                c.setFont("Helvetica", 9)
-        
-        finish_distance = distances[-1] if distances else 0
-        cumulative_distance += finish_distance
-        
-        c.setFont("Helvetica-Bold", 9)
-        c.drawString(65, y_position, "FINISH")
-        c.drawString(85, y_position, "—")
-        c.drawString(125, y_position, f"{finish_distance}")
-        c.drawString(150, y_position, data['result'])
-        c.drawString(180, y_position, f"{cumulative_distance}")
-        
-        c.save()
+                if kp_info and kp_info.get('isOwn'):
+                    color = "#ff0000"
+                elif kp_info and kp_info.get('isAlien'):
+                    color = "#0066ff"
+                else:
+                    color = "#ff8888"
+
+                svg_parts.append(f'''
+                    <circle cx="{cx}" cy="{cy}" r="{r}" fill="none" stroke="{color}" stroke-width="6"/>
+                    <text x="{cx + r + 8}" y="{cy + r + 8}" font-size="36" fill="{color}" font-weight="bold">{kp_id}</text>
+                ''')
+
+        # --- линия маршрута ---
+        path_d = ""
+        prev = None
+        for kp in path:
+            if kp not in points:
+                continue
+            x, y = points[kp]['cx'], points[kp]['cy']
+            if prev is None:
+                path_d = f"M {x},{y}"
+            else:
+                path_d += f" L {x},{y}"
+            prev = (x, y)
+
+        # --- HTML для PDF (полностью поддерживает кириллицу) ---
+        html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+    @page {{ size: A4; margin: 12mm 15mm; }}
+    body {{ font-family: 'DejaVu Sans', Arial, sans-serif; margin:0; color:#000; }}
+    
+    .page1 {{ page-break-after: always; }}
+    
+    .title   {{ font-size: 22pt; font-weight: bold; color: #c40000; text-align: center; margin: 0 0 12px 0; }}
+    .subtitle{{ font-size: 14pt; text-align: center; margin: 8px 0; color: #333; }}
+    .info    {{ font-size: 16pt; text-align: center; margin: 6px 0; }}
+    .info strong {{ color: #c40000; }}
+    
+    .map     {{ position: relative; width: 100%; height: 720px; margin: 15px 0; border: 2px solid #c40000; border-radius: 8px; overflow: hidden; }}
+    .map img {{ width: 100%; height: 100%; object-fit: contain; }}
+    svg      {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; }}
+    
+    table    {{ width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 11pt; }}
+    th       {{ background: #c40000; color: white; padding: 8px; font-weight: bold; }}
+    td       {{ padding: 6px 8px; text-align: center; border: 1px solid #aaa; }}
+    .total   {{ background: #ffe6e6; font-weight: bold; font-size: 12pt; }}
+    .header2 {{ font-size: 16pt; font-weight: bold; text-align: center; margin: 10px 0 15px 0; color: #c40000; }}
+</style>
+</head>
+<body>
+
+<!-- ==================== СТРАНИЦА 1 ==================== -->
+<div class="page1">
+    <h1 class="title">По следам истории 2025</h1>
+    <div class="subtitle">Индивидуальный маршрут участника</div>
+    
+    <div class="info"><strong>Участник:</strong> {runner}</div>
+    <div class="info"><strong>Группа:</strong> {group}</div>
+    <div class="info"><strong>Результат:</strong> {result}  |  <strong>Дистанция:</strong> {total_distance} м</div>
+    
+    <div class="map">
+        <img src="data:image/png;base64,{map_b64}" alt="Карта">
+        <svg viewBox="0 0 {map_width} {map_height}">
+            {"".join(svg_parts)}
+            <path d="{path_d}" fill="none" stroke="#ff3366" stroke-width="16" stroke-linecap="round"/>
+        </svg>
+    </div>
+</div>
+
+<!-- ==================== СТРАНИЦА 2 ==================== -->
+<div>
+    <h2 class="header2">Сплиты участника: {runner}</h2>
+    
+    <table>
+        <tr>
+            <th>№</th>
+            <th>КП</th>
+            <th>Код</th>
+            <th>Перегон</th>
+            <th>Расстояние, м</th>
+            <th>Накоплено, м</th>
+            <th>Время на перегоне</th>
+            <th>Общее время</th>
+        </tr>
+        <tr style="background:#f8f8f8;">
+            <td></td>
+            <td>Старт</td>
+            <td>С1</td>
+            <td>—</td>
+            <td>—</td>
+            <td>0</td>
+            <td>—</td>
+            <td>0:00</td>
+        </tr>
+"""
+
+        total_sec = 0
+        accum_m   = 0
+        for i in range(1, len(path) - 1):
+            kp       = path[i]
+            leg_time = leg_times[i-1] if i-1 < len(leg_times) else "—"
+            leg_dist = distances[i-1]
+            accum_m += leg_dist
+
+            if leg_time != "—" and ":" in leg_time:
+                parts = list(map(int, leg_time.replace(".", ":").split(":")))
+                secs = (parts[0]*3600 + parts[1]*60 + parts[2]) if len(parts)==3 else (parts[0]*60 + parts[1])
+                total_sec += secs
+
+            total_str = (f"{total_sec//60}:{total_sec%60:02d}" 
+                        if total_sec < 3600 else 
+                        f"{total_sec//3600}:{(total_sec%3600)//60:02d}:{total_sec%60:02d}")
+
+            html_content += f"""        <tr>
+            <td>{i}</td>
+            <td>{kp}</td>
+            <td>{kp}</td>
+            <td>{leg_time}</td>
+            <td>{leg_dist}</td>
+            <td>{accum_m}</td>
+            <td>{leg_time}</td>
+            <td>{total_str}</td>
+        </tr>\n"""
+
+        # Финиш
+        finish_dist = distances[-1] if distances else 0
+        accum_m += finish_dist
+
+        html_content += f"""        <tr class="total">
+            <td></td>
+            <td>Финиш</td>
+            <td>Ф1</td>
+            <td>—</td>
+            <td>{finish_dist}</td>
+            <td>{accum_m}</td>
+            <td>—</td>
+            <td><strong>{result}</strong></td>
+        </tr>
+    </table>
+</div>
+
+</body>
+</html>"""
+
+
+        # ---------- генерируем PDF ----------
+        font_config = FontConfiguration()
+        html = HTML(string=html_content,
+                    base_url=os.path.dirname(os.path.abspath(__file__)))
+
+        # Можно использовать локальный шрифт или онлайн (он уже встроен в weasyprint)
+        css = CSS(string="""
+            @font-face {
+                font-family: 'DejaVu Sans';
+                src: url('https://github.com/dejavu-fonts/dejavu-fonts.github.io/raw/master/dejavu-fonts-ttf-2.37/ttf/DejaVuSans.ttf');
+            }
+            body { font-family: 'DejaVu Sans', sans-serif; }
+        """, font_config=font_config)
+
+        buffer = io.BytesIO()
+        html.write_pdf(buffer, stylesheets=[css], font_config=font_config)
         buffer.seek(0)
-        
+
+        safe_name = "".join(c if c.isalnum() or c in " _-()" else "_" for c in runner)
+        encoded_name = urllib.parse.quote(f"маршрут_{safe_name}.pdf")
+
         return Response(
             buffer.getvalue(),
-            mimetype='application/pdf',
-            headers={'Content-Disposition': 'attachment;filename=map_export.pdf'}
+            mimetype="application/pdf",
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_name}"
+            }
         )
-        
-    except ImportError:
-        return jsonify({'error': 'Библиотека reportlab не установлена'}), 500
+
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/data.json')
 def data_json():
@@ -872,3 +958,4 @@ def data_json():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
+
