@@ -569,8 +569,9 @@ function selectRunner(el) {{
         totalDistance += distance;
     }}
 
-    let tbl = '<table id="splits-table"><tr><th>№</th><th>КП</th><th>Перегон</th><th>(м)</th><th>Общее</th><th>Всего</th></tr>';
-    tbl += '<tr class="split-row"><td></td><td>С1</td><td>—</td><td>—</td><td>0:00</td><td>0</td></tr>'; // Заменил СТАРТ на С1
+    // ИЗМЕНЕНИЕ 1: Поменял местами колонки "(м)" и "Общее"
+    let tbl = '<table id="splits-table"><tr><th>№</th><th>КП</th><th>Перегон</th><th>Общее</th><th>(м)</th><th>Всего</th></tr>';
+    tbl += '<tr class="split-row"><td></td><td>С1</td><td>—</td><td>0:00</td><td>—</td><td>0</td></tr>';
     
     let total = 0;
     let cumulativeDistance = 0;
@@ -583,12 +584,13 @@ function selectRunner(el) {{
         
         if (legTime && legTime !== '-' && legTime.includes(':')) total += timeToSec(legTime);
         
+        // ИЗМЕНЕНИЕ 1: Поменял местами значения колонок
         tbl += `<tr onclick="highlightKP('${{kp}}')" class="split-row">
             <td>${{i}}</td>
             <td>${{kp}}</td>
             <td>${{legTime}}</td>
-            <td>${{legDistance}}</td>
             <td>${{total>0?secToTime(total):'—'}}</td>
+            <td>${{legDistance}}</td>
             <td>${{cumulativeDistance}}</td>
         </tr>`;
     }}
@@ -602,12 +604,13 @@ function selectRunner(el) {{
         if (rs >= total) fl = secToTime(rs-total); 
     }}
     
+    // ИЗМЕНЕНИЕ 1: Поменял местами значения колонок для финишной строки
     tbl += `<tr class="split-row">
         <td></td>
-        <td style="font-weight:bold;color:#ff6666">Ф1</td> <!-- Заменил ФИНИШ на Ф1 -->
+        <td style="font-weight:bold;color:#ff6666">Ф1</td>
         <td style="font-weight:bold">${{fl}}</td>
-        <td style="font-weight:bold">${{finishDistance}}</td>
         <td style="font-weight:bold;color:#ff6666">${{ft}}</td>
+        <td style="font-weight:bold">${{finishDistance}}</td>
         <td style="font-weight:bold;color:#ff6666">${{cumulativeDistance}}</td>
     </tr></table>`;
     
@@ -796,6 +799,7 @@ def export_pdf():
             prev = (x, y)
 
         # --- HTML для PDF (полностью поддерживает кириллицу) ---
+        # ИЗМЕНЕНИЕ 2: Убрал столбец "Код" и переименовал "Накоплено, м" на "Общее расстояние, м"
         html_content = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -850,21 +854,19 @@ def export_pdf():
         <tr>
             <th>№</th>
             <th>КП</th>
-            <th>Код</th>
             <th>Перегон</th>
-            <th>Расстояние, м</th>
-            <th>Накоплено, м</th>
             <th>Время на перегоне</th>
+            <th>Расстояние, м</th>
+            <th>Общее расстояние, м</th> <!-- ИЗМЕНЕНИЕ 3: Переименовано -->
             <th>Общее время</th>
         </tr>
         <tr style="background:#f8f8f8;">
             <td></td>
             <td>Старт</td>
-            <td>С1</td>
+            <td>—</td>
             <td>—</td>
             <td>—</td>
             <td>0</td>
-            <td>—</td>
             <td>0:00</td>
         </tr>
 """
@@ -889,11 +891,10 @@ def export_pdf():
             html_content += f"""        <tr>
             <td>{i}</td>
             <td>{kp}</td>
-            <td>{kp}</td>
+            <td>{leg_time}</td>
             <td>{leg_time}</td>
             <td>{leg_dist}</td>
             <td>{accum_m}</td>
-            <td>{leg_time}</td>
             <td>{total_str}</td>
         </tr>\n"""
 
@@ -904,11 +905,10 @@ def export_pdf():
         html_content += f"""        <tr class="total">
             <td></td>
             <td>Финиш</td>
-            <td>Ф1</td>
+            <td>—</td>
             <td>—</td>
             <td>{finish_dist}</td>
             <td>{accum_m}</td>
-            <td>—</td>
             <td><strong>{result}</strong></td>
         </tr>
     </table>
@@ -958,4 +958,3 @@ def data_json():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
-
