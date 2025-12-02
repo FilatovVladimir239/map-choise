@@ -25,6 +25,7 @@ points_data = None
 participants_data = None
 splits_mtime = 0
 group_kps = {}
+map_image_b64 = None  # Кеш для base64 карты
 
 def load_group_kps():
     global group_kps
@@ -42,6 +43,14 @@ def load_group_kps():
             group_kps[group] = kps
 
 load_group_kps()
+
+def get_map_base64():
+    """Возвращает base64 изображение карты с кешированием"""
+    global map_image_b64
+    if map_image_b64 is None:
+        with open(MAP_IMAGE, "rb") as f:
+            map_image_b64 = base64.b64encode(f.read()).decode()
+    return map_image_b64
 
 def load_all_points():
     global points_data
@@ -64,10 +73,7 @@ def load_all_points():
                 cy = h - mm_y * px_per_mm_y
                 points[kp] = {"cx":cx,"cy":cy,"r":r, "mm_x": mm_x, "mm_y": mm_y}
             except: continue
-    buf = io.BytesIO()
-    im.save(buf, format="PNG")
-    img_b64 = base64.b64encode(buf.getvalue()).decode()
-    points_data = (points, (w,h), img_b64)
+    points_data = (points, (w,h))
     return points_data
 
 def parse_splits_html():
@@ -291,10 +297,13 @@ def create_map_image_with_route(map_image_path, points, visible_kps, path_points
 
 @app.route("/")
 def index():
-    points, (_, _), img_b64 = load_all_points()
+    points, (_, _) = load_all_points()
     participants = load_participants()
     if not participants:
         return "<h1 style='color:#c40000;text-align:center;margin-top:100px'>Нет данных<br><small>Проверьте splits.html и groups.txt</small></h1>"
+
+    # Получаем base64 карты из кеша
+    map_b64 = get_map_base64()
 
     svg = []
     for kp, p in points.items():
@@ -396,7 +405,7 @@ body.collapsed-right #right-toggle{{right:0;transform:rotate(180deg)}}
 <button id="right-toggle" class="panel-toggle" onclick="togglePanel('right')">▶</button>
 
 <div id="map-container">
-    <div id="map"><img src="data:image/png;base64,{img_b64}" id="mapimg">
+    <div id="map"><img src="data:image/png;base64,{map_b64}" id="mapimg">
     <svg style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none">{"".join(svg)}<path id="path" fill="none" stroke="#ff3366" stroke-width="10" opacity="0.9" stroke-linecap="round"/></svg></div>
 </div>
 
@@ -715,8 +724,8 @@ def export_pdf():
         from weasyprint.text.fonts import FontConfiguration
 
         data = request.get_json()
-        with open(MAP_IMAGE, "rb") as f:
-            map_b64 = base64.b64encode(f.read()).decode()
+        # ИСПРАВЛЕНИЕ: Используем кешированный base64 вместо чтения файла
+        map_b64 = get_map_base64()
         runner           = data['name']
         group            = data['group']
         result           = data['result']
@@ -728,7 +737,7 @@ def export_pdf():
         runner_group_kps = data['runnerGroupKps']
 
         # --- размеры карты (пиксели) ---
-        points_all, (map_width, map_height), _ = load_all_points()   # получаем актуальные размеры
+        points_all, (map_width, map_height) = load_all_points()   # получаем актуальные размеры
 
         # --- масштаб карты 1:7500 → 1 мм = 7.5 м ---
         SCALE_FACTOR = 7.5
