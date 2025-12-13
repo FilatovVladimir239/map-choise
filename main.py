@@ -230,12 +230,16 @@ def create_map_image_with_route(map_image_path, points, visible_kps, path_points
     
     # Рисуем маршрут (линию)
     if path_points and len(path_points) > 1:
-        for i in range(1, len(path_points)):
+       line_color = (255, 51, 102, 180) 
+       for i in range(1, len(path_points)):
             start_point = path_points[i-1]
             end_point = path_points[i]
-            draw.line([start_point, end_point], 
-                     fill=(255, 51, 102), width=10)
-    
+            # Создаем отдельный слой для линии с прозрачностью
+            line_layer = Image.new('RGBA', base_image.size, (0, 0, 0, 0))
+            line_draw = ImageDraw.Draw(line_layer)
+            line_draw.line([start_point, end_point], 
+                          fill=line_color, width=6)  # было width=10
+            base_image = Image.alpha_composite(base_image, line_layer)
     # Получаем старт для этой группы
     start_code = group_starts.get(group_name, "С1")
     
@@ -440,7 +444,7 @@ body.collapsed-right #right-toggle{{right:0;transform:rotate(180deg)}}
 
 <div id="map-container">
     <div id="map"><img src="data:image/png;base64,{map_b64}" id="mapimg">
-    <svg style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none">{"".join(svg)}<path id="path" fill="none" stroke="#ff3366" stroke-width="10" opacity="0.9" stroke-linecap="round"/></svg></div>
+    <svg style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none">{"".join(svg)}<path id="path" fill="none" stroke="#ff3366" stroke-width="6" opacity="0.7" stroke-linecap="round"/></svg></div>
 </div>
 
 <button id="print-btn" onclick="exportToPDF()">🖨️ Печать карты</button>
@@ -606,7 +610,8 @@ function selectRunner(el) {{
         prev = c;
     }});
     pathLine.setAttribute('d', d);
-
+    pathLine.setAttribute('stroke-width', '6');  
+    pathLine.setAttribute('opacity', '0.7');     
     // Рассчитываем расстояния
     let totalDistance = 0;
     const distances = [];
