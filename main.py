@@ -18,18 +18,20 @@ SPLITS_FILE = "splits.html"
 CACHE_FILE = "cache_participants.json"
 GROUPS_FILE = "groups.txt"
 
-A4_WIDTH_MM = 210.0
-A4_HEIGHT_MM = 297.0
+A4_WIDTH_MM = 297.0
+A4_HEIGHT_MM = 210.0
 
 points_data = None
 participants_data = None
 splits_mtime = 0
 group_kps = {}
+group_starts = {}  # Словарь для хранения старта группы (С1 или С2)
 map_image_b64 = None  # Кеш для base64 карты
 
 def load_group_kps():
-    global group_kps
+    global group_kps, group_starts
     group_kps.clear()
+    group_starts.clear()
     if not os.path.exists(GROUPS_FILE):
         print("[WARNING] groups.txt не найден")
         return
@@ -39,8 +41,21 @@ def load_group_kps():
             if not line or ":" not in line: continue
             name, kps_str = line.split(":", 1)
             group = name.strip()
-            kps = [kp.strip() for kp in kps_str.split() if kp.strip() and kp.strip() not in ["С1", "Ф1"]]
+            
+            # Ищем старт (С1 или С2) в строке
+            parts = kps_str.split()
+            start_code = None
+            for part in parts:
+                if part.startswith("С"):
+                    start_code = part.strip()
+                    break
+            
+            # Извлекаем КП, исключая С1/С2 и Ф1
+            kps = [kp.strip() for kp in kps_str.split() 
+                  if kp.strip() and kp.strip() not in ["С1", "С2", "Ф1"]]
+            
             group_kps[group] = kps
+            group_starts[group] = start_code or "С1"  # По умолчанию С1
 
 load_group_kps()
 
@@ -53,27 +68,41 @@ def get_map_base64():
     return map_image_b64
 
 def load_all_points():
+    """Загружает координаты КП, возвращает points и размеры карты"""
     global points_data
-    if points_data: return points_data
+    if points_data:
+        return points_data
+
     im = Image.open(MAP_IMAGE)
     w, h = im.size
     px_per_mm_x = w / A4_WIDTH_MM
     px_per_mm_y = h / A4_HEIGHT_MM
-    r = 4 * px_per_mm_y
+
+    # Радиус КП ≈ 3 мм на карте (уменьшен с 4 мм)
+    r = 3 * max(px_per_mm_x, px_per_mm_y)
+
     points = {}
     with open(COORDS_FILE, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
-            if not line or ":" not in line: continue
-            kp = line.split(":",1)[0].strip()
+            if not line or ":" not in line:
+                continue
+            kp = line.split(":", 1)[0].strip()
             try:
-                mm = line.split("(")[1].split(")")[0]
-                mm_x, mm_y = map(float, mm.split(","))
-                cx = mm_x * px_per_mm_x
-                cy = h - mm_y * px_per_mm_y
-                points[kp] = {"cx":cx,"cy":cy,"r":r, "mm_x": mm_x, "mm_y": mm_y}
-            except: continue
-    points_data = (points, (w,h))
+                mm_part = line.split("(")[1].split(")")[0]
+                mm_x, mm_y = map(float, mm_part.split(","))
+                
+                if kp in ["С1", "С2"]:
+                    cx = mm_x * px_per_mm_x  # Убрали +15 для стартов
+                else:
+                    cx = mm_x * px_per_mm_x + 15   
+                cy = h - mm_y * px_per_mm_y - 3    
+                points[kp] = {"cx": cx, "cy": cy, "r": r, "mm_x": mm_x, "mm_y": mm_y}
+            except Exception as e:
+                print(f"[ERROR] Ошибка парсинга {kp}: {e}")
+                continue
+
+    points_data = (points, (w, h))
     return points_data
 
 def parse_splits_html():
@@ -118,7 +147,7 @@ def parse_splits_html():
                 kp_match = re.search(r"\[(\w+)\]", lines[0])
                 if not kp_match: continue
                 kp = kp_match.group(1)
-                if kp in ["С1", "Ф1"]: continue
+                if kp in ["С1", "С2", "Ф1"]: continue
                 t = lines[1] if i > 0 and len(lines) > 1 else (
                     re.search(r"^(\d+:\d+)", lines[0]).group(1) if i == 0 and re.search(r"^(\d+:\d+)", lines[0]) else "-"
                 )
@@ -126,10 +155,12 @@ def parse_splits_html():
                 legs.append(t)
 
             if cur_group:
+                # Добавляем соответствующий старт для группы
+                start_code = group_starts.get(cur_group, "С1")
                 participants.setdefault(cur_group, []).append({
                     "name": f"{place}. {name}",
                     "group": cur_group,
-                    "path": ["С1"] + path + ["Ф1"],
+                    "path": [start_code] + path + ["Ф1"],
                     "leg_times": legs,
                     "result": result
                 })
@@ -205,8 +236,11 @@ def create_map_image_with_route(map_image_path, points, visible_kps, path_points
             draw.line([start_point, end_point], 
                      fill=(255, 51, 102), width=10)
     
+    # Получаем старт для этой группы
+    start_code = group_starts.get(group_name, "С1")
+    
     # Рисуем только КП группы спортсмена + старт/финиш + чужие КП которые он взял
-    kps_to_draw = ['С1', 'Ф1'] + runner_group_kps
+    kps_to_draw = [start_code, 'Ф1'] + runner_group_kps
     
     # Добавляем чужие КП которые взял спортсмен
     for kp_info in visible_kps:
@@ -224,7 +258,7 @@ def create_map_image_with_route(map_image_path, points, visible_kps, path_points
         # Находим информацию о КП из visible_kps
         kp_info = next((kp for kp in visible_kps if kp['id'] == kp_id), None)
         
-        if kp_id == 'С1':
+        if kp_id == start_code:
             # Старт - треугольник зеленого цвета
             size = r * 1.5
             draw.polygon([
@@ -232,10 +266,10 @@ def create_map_image_with_route(map_image_path, points, visible_kps, path_points
                 (x - size, y + size),
                 (x + size, y + size)
             ], outline=(0, 128, 0), width=8)
-            # Подпись С1
+            # Подпись старта
             try:
                 if font_path:
-                    draw.text((x + size + 10, y + size + 10), "С1", 
+                    draw.text((x + size + 10, y + size + 10), start_code, 
                              fill=(0, 128, 0), font=title_font, 
                              stroke_width=2, stroke_fill=(255, 255, 255))
             except:
@@ -315,13 +349,13 @@ def index():
                     <text x="{p["cx"] + p["r"]*1.3 + 8}" y="{p["cy"] + p["r"]*1.3 + 8}" font-size="32" font-weight="900" text-anchor="start" dominant-baseline="hanging" fill="#ff0000" stroke="#fff" stroke-width="1.5">Ф1</text>
                 </g>
             ''')
-        elif kp == "С1":
+        elif kp == "С1" or kp == "С2":
             triangle_size = p["r"] * 1.2
             points_str = f'{p["cx"]},{p["cy"] - triangle_size} {p["cx"] - triangle_size},{p["cy"] + triangle_size} {p["cx"] + triangle_size},{p["cy"] + triangle_size}'
             svg.append(f'''
                 <g id="kp_{kp}" class="kp">
                     <polygon points="{points_str}" fill="none" stroke="#ff0000" stroke-width="6"/>
-                    <text x="{p["cx"] + triangle_size + 8}" y="{p["cy"] + triangle_size + 8}" font-size="32" font-weight="900" text-anchor="start" dominant-baseline="hanging" fill="#ff0000" stroke="#fff" stroke-width="1.5">С1</text>
+                    <text x="{p["cx"] + triangle_size + 8}" y="{p["cy"] + triangle_size + 8}" font-size="32" font-weight="900" text-anchor="start" dominant-baseline="hanging" fill="#ff0000" stroke="#fff" stroke-width="1.5">{kp}</text>
                 </g>
             ''')
         else:
@@ -342,7 +376,7 @@ def index():
         acc += f'<div class="group"><div class="group-header {open_class}" onclick="toggleGroup(this,\'{g}\')">{g} ({len(runners)})</div><div class="person-list {open_class}">{items}</div></div>'
 
     html = f'''<!DOCTYPE html>
-<html lang="ru"><head><meta charset="utf-8"><title>По следам истории 2025</title>
+<html lang="ru"><head><meta charset="utf-8"><title>Снежная тропа</title>
 <style>
 body,html{{margin:0;height:100%;overflow:hidden;background:#111;color:#fff;font-family:Arial,sans-serif}}
 #left,#right{{position:fixed;top:0;bottom:0;z-index:10;transition:.4s}}
@@ -414,6 +448,7 @@ body.collapsed-right #right-toggle{{right:0;transform:rotate(180deg)}}
 <script>
 const points = {json.dumps(points, ensure_ascii=False)};
 const groupKps = {json.dumps(group_kps, ensure_ascii=False)};
+const groupStarts = {json.dumps(group_starts, ensure_ascii=False)};
 let participants = null;
 const mapDiv = document.getElementById('map');
 const img = document.getElementById('mapimg');
@@ -484,9 +519,10 @@ function toggleGroup(h, group) {{
         h.classList.add('open');
         h.nextElementSibling.classList.add('open');
         currentGroupKps = groupKps[group] || [];
+        const startCode = groupStarts[group] || 'С1';
         document.querySelectorAll('.kp').forEach(g => {{
             const id = g.id.replace('kp_', '');
-            if (id === 'С1' || id === 'Ф1' || (groupKps[group] && groupKps[group].includes(id))) {{
+            if (id === startCode || id === 'Ф1' || (groupKps[group] && groupKps[group].includes(id))) {{
                 g.classList.add('visible');
             }} else {{
                 g.classList.remove('visible');
@@ -512,8 +548,8 @@ function calculateDistance(kp1, kp2) {{
     const dy = y2 - y1;
     const distanceMm = Math.sqrt(dx*dx + dy*dy);
     
-    // Переводим в метры (1 мм = 5 метров по масштабу карты)
-    const scaleFactor = 7.5;
+    // Переводим в метры (1 мм = 4 метра по масштабу карты) - изменено с 7.5 на 4
+    const scaleFactor = 4;
     const distanceMeters = Math.round(distanceMm * scaleFactor);
     
     return distanceMeters;
@@ -533,11 +569,13 @@ function selectRunner(el) {{
     const leg = r.leg_times;
     const result = r.result;
     const ownKps = new Set(groupKps[group] || []);
-    const taken = new Set(path.filter(k => k !== 'С1' && k !== 'Ф1'));
+    const taken = new Set(path.filter(k => k !== groupStarts[group] && k !== 'Ф1'));
 
+    const startCode = groupStarts[group] || 'С1';
+    
     document.querySelectorAll('.kp').forEach(g => {{
         const id = g.id.replace('kp_', '');
-        if (id === 'С1' || id === 'Ф1') {{
+        if (id === startCode || id === 'Ф1') {{
             g.classList.add('visible');
         }} else if (ownKps.has(id)) {{
             g.classList.add('visible');
@@ -554,7 +592,7 @@ function selectRunner(el) {{
     path.forEach(k => {{
         if (!points[k]) return;
         let c = {{x: points[k].cx, y: points[k].cy, r: points[k].r || 30}};
-        if (k === 'С1') c.r = c.r * 1.2;
+        if (k === startCode) c.r = c.r * 1.2;
         if (k === 'Ф1') c.r = c.r * 1.3;
         
         if (prev) {{
@@ -578,9 +616,9 @@ function selectRunner(el) {{
         totalDistance += distance;
     }}
 
-    // ИЗМЕНЕНИЕ 1: Поменял местами колонки "(м)" и "Общее"
+    // Поменял местами колонки "(м)" и "Общее"
     let tbl = '<table id="splits-table"><tr><th>№</th><th>КП</th><th>Перегон</th><th>Общее</th><th>(м)</th><th>Всего</th></tr>';
-    tbl += '<tr class="split-row"><td></td><td>С1</td><td>—</td><td>0:00</td><td>—</td><td>0</td></tr>';
+    tbl += `<tr class="split-row"><td></td><td>${{startCode}}</td><td>—</td><td>0:00</td><td>—</td><td>0</td></tr>`;
     
     let total = 0;
     let cumulativeDistance = 0;
@@ -593,7 +631,7 @@ function selectRunner(el) {{
         
         if (legTime && legTime !== '-' && legTime.includes(':')) total += timeToSec(legTime);
         
-        // ИЗМЕНЕНИЕ 1: Поменял местами значения колонок
+        // Поменял местами значения колонок
         tbl += `<tr onclick="highlightKP('${{kp}}')" class="split-row">
             <td>${{i}}</td>
             <td>${{kp}}</td>
@@ -613,7 +651,7 @@ function selectRunner(el) {{
         if (rs >= total) fl = secToTime(rs-total); 
     }}
     
-    // ИЗМЕНЕНИЕ 1: Поменял местами значения колонок для финишной строки
+    // Поменял местами значения колонок для финишной строки
     tbl += `<tr class="split-row">
         <td></td>
         <td style="font-weight:bold;color:#ff6666">Ф1</td>
@@ -724,7 +762,7 @@ def export_pdf():
         from weasyprint.text.fonts import FontConfiguration
 
         data = request.get_json()
-        # ИСПРАВЛЕНИЕ: Используем кешированный base64 вместо чтения файла
+        # Используем кешированный base64 вместо чтения файла
         map_b64 = get_map_base64()
         runner           = data['name']
         group            = data['group']
@@ -739,8 +777,8 @@ def export_pdf():
         # --- размеры карты (пиксели) ---
         points_all, (map_width, map_height) = load_all_points()   # получаем актуальные размеры
 
-        # --- масштаб карты 1:7500 → 1 мм = 7.5 м ---
-        SCALE_FACTOR = 7.5
+        # --- масштаб карты 1:4000 → 1 мм = 4 м ---
+        SCALE_FACTOR = 4
 
         # --- считаем дистанцию по всем перегонам ---
         distances = []
@@ -765,15 +803,15 @@ def export_pdf():
 
             # Видимость КП
             kp_info = next((k for k in visible_kps_data if k['id'] == kp_id), None)
-            if kp_id not in ('С1', 'Ф1') and not kp_info:
+            if kp_id not in ('С1', 'С2', 'Ф1') and not kp_info:
                 continue
 
-            if kp_id == 'С1':
+            if kp_id == path[0]:  # Старт участника
                 size = r * 1.5
                 polygon = f"{cx},{cy-size} {cx-size},{cy+size} {cx+size},{cy+size}"
                 svg_parts.append(f'''
-                    <polygon points="{polygon}" fill="none" stroke="#008800" stroke-width="8"/>
-                    <text x="{cx + size + 10}" y="{cy + size + 10}" font-size="40" fill="#008800" font-weight="bold">С1</text>
+                    <polygon points="{polygon}" fill="none" stroke="#ff0000" stroke-width="8"/>
+                    <text x="{cx + size + 10}" y="{cy + size + 10}" font-size="40" fill="#ff0000" font-weight="bold">{kp_id}</text>
                 ''')
             elif kp_id == 'Ф1':
                 svg_parts.append(f'''
@@ -808,7 +846,6 @@ def export_pdf():
             prev = (x, y)
 
         # --- HTML для PDF (полностью поддерживает кириллицу) ---
-        # ИЗМЕНЕНИЕ 2: Убрал столбец "Код" и переименовал "Накоплено, м" на "Общее расстояние, м"
         html_content = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -839,10 +876,8 @@ def export_pdf():
 
 <!-- ==================== СТРАНИЦА 1 ==================== -->
 <div class="page1">
-    <h1 class="title">По следам истории 2025</h1>
-    <div class="subtitle">Индивидуальный маршрут участника</div>
-    
-    <div class="info"><strong>Участник:</strong> {runner}</div>
+    <h1 class="title">Снежная тропа</h1> 
+    <div class="info">{runner}</div>
     <div class="info"><strong>Группа:</strong> {group}</div>
     <div class="info"><strong>Результат:</strong> {result}  |  <strong>Дистанция:</strong> {total_distance} м</div>
     
@@ -850,7 +885,7 @@ def export_pdf():
         <img src="data:image/png;base64,{map_b64}" alt="Карта">
         <svg viewBox="0 0 {map_width} {map_height}">
             {"".join(svg_parts)}
-            <path d="{path_d}" fill="none" stroke="#ff3366" stroke-width="16" stroke-linecap="round"/>
+            <path d="{path_d}" fill="none" stroke="#ff3366" stroke-width="10" stroke-linecap="round"/>
         </svg>
     </div>
 </div>
@@ -866,12 +901,12 @@ def export_pdf():
             <th>Перегон</th>
             <th>Время на перегоне</th>
             <th>Расстояние, м</th>
-            <th>Общее расстояние, м</th> <!-- ИЗМЕНЕНИЕ 3: Переименовано -->
+            <th>Общее расстояние, м</th>
             <th>Общее время</th>
         </tr>
         <tr style="background:#f8f8f8;">
             <td></td>
-            <td>Старт</td>
+            <td>{path[0]}</td>
             <td>—</td>
             <td>—</td>
             <td>—</td>
@@ -926,13 +961,11 @@ def export_pdf():
 </body>
 </html>"""
 
-
         # ---------- генерируем PDF ----------
         font_config = FontConfiguration()
         html = HTML(string=html_content,
                     base_url=os.path.dirname(os.path.abspath(__file__)))
 
-        # Можно использовать локальный шрифт или онлайн (он уже встроен в weasyprint)
         css = CSS(string="""
             @font-face {
                 font-family: 'DejaVu Sans';
