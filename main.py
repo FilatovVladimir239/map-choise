@@ -107,20 +107,28 @@ def load_all_points():
 
 def parse_splits_html():
     participants = {}
+    
+    # Сначала инициализируем все известные группы как пустые
+    for group_name in group_kps.keys():
+        participants[group_name] = []
+    
     cur_group = None
     try:
         with open(SPLITS_FILE, encoding="windows-1251") as f:
             soup = BeautifulSoup(f, "html.parser")
     except Exception as e:
         print(f"[ERROR] splits.html: {e}")
-        return {}
+        return participants
 
+    # Остальной код остается без изменений...
     for a in soup.find_all("a", {"name": True}):
         raw = a["name"].strip()
         for group_name in group_kps.keys():
             if group_name.lower() in raw.lower() or raw.lower() in group_name.lower():
                 cur_group = group_name
-                participants[cur_group] = []
+                # Не перезаписываем если уже есть участники
+                if cur_group not in participants:
+                    participants[cur_group] = []
                 break
 
     for table in soup.find_all("table", class_="rezult"):
@@ -155,7 +163,6 @@ def parse_splits_html():
                 legs.append(t)
 
             if cur_group:
-                # Добавляем соответствующий старт для группы
                 start_code = group_starts.get(cur_group, "С1")
                 participants.setdefault(cur_group, []).append({
                     "name": f"{place}. {name}",
@@ -170,10 +177,23 @@ def parse_splits_html():
 
 def load_participants():
     global participants_data, splits_mtime
-    if not os.path.exists(SPLITS_FILE): return {}
+    participants = {}
+    
+    # Сначала создаем пустые группы для всех групп из groups.txt
+    for group_name in group_kps.keys():
+        participants[group_name] = []
+    
+    if not os.path.exists(SPLITS_FILE): 
+        return participants
+    
     mtime = os.path.getmtime(SPLITS_FILE)
     if participants_data is None or mtime > splits_mtime:
-        participants_data = parse_splits_html()
+        parsed_data = parse_splits_html()
+        # Объединяем с пустыми группами
+        for group_name, runners in parsed_data.items():
+            participants[group_name] = runners
+        participants_data = participants
+        
         with open(CACHE_FILE, "w", encoding="utf-8") as f:
             json.dump(participants_data, f, ensure_ascii=False, indent=2)
         splits_mtime = mtime
@@ -181,6 +201,12 @@ def load_participants():
         if os.path.exists(CACHE_FILE):
             with open(CACHE_FILE, "r", encoding="utf-8") as f:
                 participants_data = json.load(f)
+    
+    # Убедимся, что все группы присутствуют
+    for group_name in group_kps.keys():
+        if group_name not in participants_data:
+            participants_data[group_name] = []
+    
     return participants_data
 
 def get_available_font():
@@ -337,8 +363,6 @@ def create_map_image_with_route(map_image_path, points, visible_kps, path_points
 def index():
     points, (_, _) = load_all_points()
     participants = load_participants()
-    if not participants:
-        return "<h1 style='color:#c40000;text-align:center;margin-top:100px'>Нет данных<br><small>Проверьте splits.html и groups.txt</small></h1>"
 
     # Получаем base64 карты из кеша
     map_b64 = get_map_base64()
@@ -371,12 +395,20 @@ def index():
             ''')
 
     acc = ""
-    first = next(iter(participants), None)
-    for g, runners in participants.items():
+    sorted_groups = list(participants.keys())
+    first = sorted_groups[0] if sorted_groups else None
+
+    for g in sorted_groups:
+        runners = participants.get(g, [])
         open_class = "open" if g == first else ""
         items = ""
         for i, r in enumerate(runners):
             items += f'<div class="person" data-id="{i}" data-group="{g}" onclick="selectRunner(this)">{r["name"]}</div>'
+        
+        # Даже если нет участников, показываем группу
+        if not runners:
+            items = '<div class="person" style="color:#888;font-style:italic;">Нет участников</div>'
+            
         acc += f'<div class="group"><div class="group-header {open_class}" onclick="toggleGroup(this,\'{g}\')">{g} ({len(runners)})</div><div class="person-list {open_class}">{items}</div></div>'
 
     html = f'''<!DOCTYPE html>
@@ -420,7 +452,109 @@ body.collapsed-right #right-toggle{{right:0;transform:rotate(180deg)}}
 .kp.highlighted circle{{stroke:yellow;stroke-width:16;filter:drop-shadow(0 0 12px yellow)}}
 .kp.highlighted polygon{{stroke:yellow;stroke-width:16;filter:drop-shadow(0 0 12px yellow)}}
 #print-btn{{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:20;background:#c40000;border:none;color:white;padding:12px 24px;border-radius:6px;cursor:pointer;font-size:16px;font-weight:bold}}
-#print-btn:hover{{background:#a00}}
+
+.footer {{
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: rgba(20, 20, 20, 0.95);
+    border-top: 2px solid #c40000;
+    padding: 12px 20px;
+    display: flex;
+    align-items: center;
+    z-index: 100;
+}}
+
+.footer-logo {{
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}}
+
+.footer-logo img {{
+    height: 40px;
+    width: auto;
+}}
+
+.footer-text {{
+    color: #fff;
+    font-size: 14px;
+    text-align: right;
+    font-style: italic;
+    margin-left: auto;
+    padding-left: 30px;
+    max-width: 800px;
+}}
+
+.footer-text strong {{
+    color: #c40000;
+    font-weight: bold;
+}}
+
+/* Мобильная версия - скрываем текст, центрируем логотип */
+@media (max-width: 768px) {{
+    .footer {{
+        justify-content: center; /* Центрируем содержимое */
+        padding: 8px 10px;
+    }}
+    
+    .footer-text {{
+        display: none; /* Полностью скрываем текст */
+    }}
+    
+    .footer-logo {{
+        margin-left: 0; /* Убираем отступы */
+        gap: 10px;
+    }}
+    
+    .footer-logo img {{
+        height: 35px;
+    }}
+    
+    .footer-logo div {{
+        font-size: 14px; /* Уменьшаем текст логотипа */
+    }}
+
+    #print-btn {{
+        bottom: 60px;
+    }}	
+}}
+/* Сдвиг кнопки печати выше */
+#print-btn {{
+    position: fixed;
+    bottom: 70px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 20;
+    background: #c40000;
+    border: none;
+    color: white;
+    padding: 12px 24px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 16px;
+    font-weight: bold;
+}}
+#print-btn:hover {{ background: #a00; }}
+
+/* Для мобильных устройств */
+@media (max-width: 768px) {{
+    .footer {{
+        flex-direction: column;
+        gap: 10px;
+        text-align: center;
+        padding: 10px;
+    }}
+    .footer-logo {{
+        flex-direction: column;
+        gap: 8px;
+    }}
+    .footer-text {{
+        text-align: center;
+        font-size: 12px;
+    }}
+}}
 </style></head><body>
 <div id="left">
     <div id="left-content">
@@ -448,6 +582,16 @@ body.collapsed-right #right-toggle{{right:0;transform:rotate(180deg)}}
 </div>
 
 <button id="print-btn" onclick="exportToPDF()">🖨️ Печать карты</button>
+<div class="footer">
+    <div class="footer-logo">
+        <img src="/static/logo.png" alt="Логотип Импульс">
+        <div style="color:#fff;font-size:16px;font-weight:bold;">Импульс</div>
+    </div>
+    <div class="footer-text">
+        Создано при поддержке организации по развитию спортивного ориентирования<br>
+        и смежных видов спорта "Импульс"
+    </div>
+</div>
 
 <script>
 const points = {json.dumps(points, ensure_ascii=False)};
