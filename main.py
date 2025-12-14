@@ -1,20 +1,23 @@
+import re
+import os
+import io
+import base64
+import time
+import json
+import math
+import tempfile
+import urllib.parse
 from flask import Flask, render_template_string, send_from_directory, jsonify, Response, request
 from PIL import Image, ImageDraw, ImageFont
-import io, base64, json, re, os, tempfile
 from bs4 import BeautifulSoup
-import math
 from weasyprint import HTML, CSS
 from weasyprint.text.fonts import FontConfiguration
-import json
-import os
-import urllib.parse
-import base64
 
 app = Flask(__name__)
 
 MAP_IMAGE = "static/map.png"
 COORDS_FILE = "coordinates.txt"
-SPLITS_FILE = "splits.html"
+SPLITS_FILE = "splits.htm"
 CACHE_FILE = "cache_participants.json"
 GROUPS_FILE = "groups.txt"
 
@@ -68,17 +71,33 @@ def get_map_base64():
     return map_image_b64
 
 def load_all_points():
-    """Загружает координаты КП, возвращает points и размеры карты"""
+    """Загружает координаты КП с кешированием"""
     global points_data
+    
     if points_data:
         return points_data
-
+    
+    cache_file = "cache_points.json"
+    
+    # Пробуем загрузить из кеша
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                points_data = json.load(f)
+            
+            # Конвертируем обратно в нужный формат
+            points = points_data['points']
+            map_size = tuple(points_data['map_size'])
+            print(f"[INFO] Координаты загружены из кеша: {len(points)} КП")
+            return (points, map_size)
+        except:
+            pass
+    
+    # Если кеша нет - парсим как раньше
     im = Image.open(MAP_IMAGE)
     w, h = im.size
     px_per_mm_x = w / A4_WIDTH_MM
     px_per_mm_y = h / A4_HEIGHT_MM
-
-    # Радиус КП ≈ 3 мм на карте (уменьшен с 4 мм)
     r = 3 * max(px_per_mm_x, px_per_mm_y)
 
     points = {}
@@ -93,7 +112,7 @@ def load_all_points():
                 mm_x, mm_y = map(float, mm_part.split(","))
                 
                 if kp in ["С1", "С2"]:
-                    cx = mm_x * px_per_mm_x  # Убрали +15 для стартов
+                    cx = mm_x * px_per_mm_x
                 else:
                     cx = mm_x * px_per_mm_x + 15   
                 cy = h - mm_y * px_per_mm_y - 3    
@@ -103,111 +122,292 @@ def load_all_points():
                 continue
 
     points_data = (points, (w, h))
+    
+    # Сохраняем в кеш
+    try:
+        with open(cache_file, 'w', encoding='utf-8') as f:
+            json.dump({
+                'points': points,
+                'map_size': [w, h]
+            }, f, ensure_ascii=False, indent=2)
+        print(f"[INFO] Координаты сохранены в кеш: {cache_file}")
+    except Exception as e:
+        print(f"[WARNING] Не удалось сохранить кеш координат: {e}")
+    
     return points_data
 
 def parse_splits_html():
-    participants = {}
+    participants = {g: [] for g in group_kps.keys()}
     
-    # Сначала инициализируем все известные группы как пустые
-    for group_name in group_kps.keys():
-        participants[group_name] = []
-    
-    cur_group = None
-    try:
-        with open(SPLITS_FILE, encoding="windows-1251") as f:
-            soup = BeautifulSoup(f, "html.parser")
-    except Exception as e:
-        print(f"[ERROR] splits.html: {e}")
+    # Сначала убедимся, что файл существует
+    if not os.path.exists(SPLITS_FILE):
+        print(f"[ERROR] Файл {SPLITS_FILE} не найден")
         return participants
-
-    # Остальной код остается без изменений...
-    for a in soup.find_all("a", {"name": True}):
-        raw = a["name"].strip()
-        for group_name in group_kps.keys():
-            if group_name.lower() in raw.lower() or raw.lower() in group_name.lower():
-                cur_group = group_name
-                # Не перезаписываем если уже есть участники
-                if cur_group not in participants:
-                    participants[cur_group] = []
-                break
-
-    for table in soup.find_all("table", class_="rezult"):
-        prev_a = table.find_previous("a", {"name": True})
-        if prev_a:
-            raw = prev_a["name"].strip()
-            for group_name in group_kps.keys():
-                if group_name.lower() in raw.lower():
-                    cur_group = group_name
-                    break
-
+        
+    try:
+        with open(SPLITS_FILE, encoding='windows-1251') as f:
+            content = f.read()
+            soup = BeautifulSoup(content, 'html.parser')
+    except Exception as e:
+        print(f"[ERROR] Ошибка чтения splits.html: {e}")
+        # Попробуем другую кодировку
+        try:
+            with open(SPLITS_FILE, encoding='utf-8') as f:
+                content = f.read()
+                soup = BeautifulSoup(content, 'html.parser')
+        except Exception as e2:
+            print(f"[ERROR] Ошибка с кодировкой UTF-8: {e2}")
+            return participants
+    
+    print(f"[DEBUG] Загружено {len(content)} символов из splits.html")
+    
+    # Найдем все таблицы с классом 'rezult'
+    tables = soup.find_all('table', class_='rezult')
+    print(f"[DEBUG] Найдено таблиц: {len(tables)}")
+    
+    # Для отладки: найдем все заголовки h2
+    h2_tags = soup.find_all('h2')
+    print(f"[DEBUG] Найдено заголовков h2: {len(h2_tags)}")
+    for i, h2 in enumerate(h2_tags):
+        print(f"  h2[{i}]: '{h2.get_text(strip=True)}'")
+    
+    # Найдем все span с классом 'group'
+    group_spans = soup.find_all('span', class_='group')
+    print(f"[DEBUG] Найдено span с классом 'group': {len(group_spans)}")
+    for i, span in enumerate(group_spans):
+        print(f"  group_span[{i}]: '{span.get_text(strip=True)}'")
+    
+    # Простой подход: будем искать таблицы и пытаться определить группу по контексту
+    for table in tables:
+        # Попробуем найти группу перед таблицей
+        group_name = None
+        
+        # Ищем ближайший заголовок h2 перед таблицей (исправлено)
+        prev_h2 = table.find_previous('h2')
+        if prev_h2:
+            text = prev_h2.get_text(strip=True)
+            # Проверяем, есть ли такая группа в groups.txt
+            if text in group_kps:
+                group_name = text
+                print(f"[DEBUG] Найдена группа по h2: {group_name}")
+        
+        # Если не нашли по h2, ищем по span с классом group
+        if not group_name:
+            prev_span = table.find_previous('span', class_='group')
+            if prev_span:
+                text = prev_span.get_text(strip=True)
+                # Удаляем возможные цифры в скобках
+                text = re.sub(r'\s*\(\d+\)\s*', '', text)
+                if text in group_kps:
+                    group_name = text
+                    print(f"[DEBUG] Найдена группа по span: {group_name}")
+        
+        # Если все еще не нашли, проверяем ближайший текст перед таблицей
+        if not group_name:
+            # Получаем весь текст перед таблицей
+            all_previous = table.find_all_previous()
+            for elem in all_previous[:10]:  # Проверяем первые 10 элементов
+                if elem.name in ['h2', 'span', 'a']:
+                    text = elem.get_text(strip=True)
+                    if text in group_kps:
+                        group_name = text
+                        print(f"[DEBUG] Найдена группа по контексту: {group_name}")
+                        break
+        
+        if not group_name:
+            print("[DEBUG] Не удалось определить группу для таблицы, пропускаем")
+            continue
+        
+        print(f"[DEBUG] Парсим таблицу для группы: {group_name}")
+        
+        # Парсим таблицу
+        header_row = table.find("tr")
+        if not header_row:
+            continue
+            
+        header_cells = header_row.find_all(["th", "td"])
+        kp_by_col = {}
+        leg_start_idx = None
+        
+        # Ищем столбцы с КП
+        for idx, cell in enumerate(header_cells):
+            text = cell.get_text(strip=True)
+            # Ищем КП в формате #1 (94) или #1 [94]
+            if text.startswith("#"):
+                # Пробуем разные форматы
+                m = re.search(r'\((\d+)\)', text)
+                if m:
+                    kp_by_col[idx] = m.group(1)
+                else:
+                    m = re.search(r'\[(\d+)\]', text)
+                    if m:
+                        kp_by_col[idx] = m.group(1)
+                
+                if idx in kp_by_col and leg_start_idx is None:
+                    leg_start_idx = idx
+        
+        if leg_start_idx is None:
+            print(f"[DEBUG] Не найдены КП в заголовках таблицы для группы {group_name}")
+            # Попробуем другой подход: ищем КП в названиях столбцов
+            for idx, cell in enumerate(header_cells):
+                text = cell.get_text(strip=True)
+                # Прямой поиск цифр КП
+                m = re.search(r'(\d{2,3})', text)
+                if m and not text.startswith('#'):
+                    kp = m.group(1)
+                    if kp not in ['240', 'F', 'Ф']:
+                        kp_by_col[idx] = kp
+                        if leg_start_idx is None:
+                            leg_start_idx = idx
+        
+        if leg_start_idx is None:
+            print(f"[DEBUG] Все еще не найдены КП, пропускаем таблицу")
+            continue
+        
+        print(f"[DEBUG] Начальный индекс КП: {leg_start_idx}, КП по столбцам: {kp_by_col}")
+        
+        # Парсим строки участников
         for row in table.find_all("tr")[1:]:
-            c = row.find_all("td")
-            if len(c) < 10: continue
-            place = c[0].get_text(strip=True).replace(".", "")
-            name = c[2].get_text(strip=True)
-            if "Фамилия" in name or not name: continue
-            result = c[8].get_text(strip=True) if len(c) > 8 else "-"
-            path, legs = [], []
-            for i, cell in enumerate(c[10:]):
-                txt = cell.get_text(separator="\n", strip=True)
-                lines = [l.strip() for l in txt.split("\n") if l.strip()]
-                if not lines: continue
-                kp_match = re.search(r"\[(\w+)\]", lines[0])
-                if not kp_match: continue
-                kp = kp_match.group(1)
-                if kp in ["С1", "С2", "Ф1"]: continue
-                t = lines[1] if i > 0 and len(lines) > 1 else (
-                    re.search(r"^(\d+:\d+)", lines[0]).group(1) if i == 0 and re.search(r"^(\d+:\d+)", lines[0]) else "-"
-                )
+            cells = row.find_all("td")
+            if len(cells) < 4:
+                continue
+                
+            # Место (убираем точку)
+            place_cell = cells[0].get_text(strip=True)
+            place = place_cell.replace(".", "") if "." in place_cell else place_cell
+            
+            # Имя (обычно в третьем столбце, но может быть во втором)
+            name = ""
+            if len(cells) > 2:
+                name = cells[2].get_text(strip=True)
+            elif len(cells) > 1:
+                name = cells[1].get_text(strip=True)
+            
+            # Пропускаем пустые или заголовочные строки
+            if not name or "Фамилия" in name or "Имя" in name or name.isdigit():
+                continue
+            
+            # Результат (обычно в четвертом столбце)
+            result = cells[3].get_text(strip=True) if len(cells) > 3 else "-"
+            
+            # Собираем маршрут
+            path = []
+            leg_times = []
+            
+            for col_idx in range(leg_start_idx, len(cells)):
+                kp = kp_by_col.get(col_idx)
+                if not kp and col_idx < len(cells):
+                    # Пробуем найти КП в содержимом ячейки
+                    cell_text = cells[col_idx].get_text(strip=True)
+                    m = re.search(r'\[(\d+)\]', cell_text)
+                    if m:
+                        kp = m.group(1)
+                    else:
+                        # Ищем просто цифры
+                        m = re.search(r'\b(\d{2,3})\b', cell_text)
+                        if m:
+                            kp = m.group(1)
+                
+                if not kp or kp in ["240", "F", "Ф"]:
+                    continue
+                
+                # Извлекаем время
+                cell_text = cells[col_idx].get_text(strip=True, separator='\n')
+                cell_lines = [l.strip() for l in cell_text.split('\n') if l.strip()]
+                
+                time_str = "-"
+                if len(cell_lines) > 1:
+                    # Время обычно во второй строке
+                    time_line = cell_lines[1]
+                    # Убираем место в скобках, если есть
+                    time_match = re.match(r'(\d+:\d+(?::\d+)?)', time_line)
+                    if time_match:
+                        time_str = time_match.group(1)
+                elif cell_lines:
+                    # Ищем время в единственной строке
+                    time_match = re.search(r'(\d+:\d+(?::\d+)?)', cell_lines[0])
+                    if time_match:
+                        time_str = time_match.group(1)
+                
                 path.append(kp)
-                legs.append(t)
-
-            if cur_group:
-                start_code = group_starts.get(cur_group, "С1")
-                participants.setdefault(cur_group, []).append({
+                leg_times.append(time_str)
+            
+            if path:
+                start_code = group_starts.get(group_name, "С1")
+                
+                participants[group_name].append({
                     "name": f"{place}. {name}",
-                    "group": cur_group,
+                    "group": group_name,
                     "path": [start_code] + path + ["Ф1"],
-                    "leg_times": legs,
+                    "leg_times": leg_times,
                     "result": result
                 })
-
-    print(f"[SUCCESS] Загружено {sum(len(v) for v in participants.values())} участников")
+    
+    # Подсчитываем результаты
+    total = sum(len(v) for v in participants.values())
+    print(f"[SUCCESS] Загружено {total} участников")
+    
+    # Выводим статистику по группам
+    for group_name in sorted(participants.keys()):
+        count = len(participants[group_name])
+        if count > 0:
+            print(f"  {group_name}: {count} участников")
+            # Выводим первого участника для примера
+            if participants[group_name]:
+                print(f"    Пример: {participants[group_name][0]['name']}")
+        else:
+            print(f"  {group_name}: 0 участников (группа есть в groups.txt но нет в splits)")
+    
     return participants
 
+
+# Вызовем эту функцию в load_participants для отладки
 def load_participants():
-    global participants_data, splits_mtime
-    participants = {}
+    """Загружает участников с простым кешированием"""
+    global participants_data
     
-    # Сначала создаем пустые группы для всех групп из groups.txt
-    for group_name in group_kps.keys():
-        participants[group_name] = []
+    # Если уже загружены - возвращаем
+    if participants_data is not None:
+        return participants_data
     
-    if not os.path.exists(SPLITS_FILE): 
-        return participants
-    
-    mtime = os.path.getmtime(SPLITS_FILE)
-    if participants_data is None or mtime > splits_mtime:
-        parsed_data = parse_splits_html()
-        # Объединяем с пустыми группами
-        for group_name, runners in parsed_data.items():
-            participants[group_name] = runners
-        participants_data = participants
-        
-        with open(CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(participants_data, f, ensure_ascii=False, indent=2)
-        splits_mtime = mtime
-    else:
-        if os.path.exists(CACHE_FILE):
-            with open(CACHE_FILE, "r", encoding="utf-8") as f:
+    # Проверяем кеш
+    if os.path.exists(CACHE_FILE):
+        try:
+            print("[INFO] Загрузка участников из кеша...")
+            with open(CACHE_FILE, 'r', encoding='utf-8') as f:
                 participants_data = json.load(f)
+            
+            total = sum(len(v) for v in participants_data.values())
+            print(f"[SUCCESS] Загружено {total} участников из кеша")
+            return participants_data
+        except Exception as e:
+            print(f"[WARNING] Ошибка загрузки кеша: {e}")
+            participants_data = None
     
-    # Убедимся, что все группы присутствуют
-    for group_name in group_kps.keys():
-        if group_name not in participants_data:
-            participants_data[group_name] = []
+    # Если кеша нет или он битый - парсим
+    print("[INFO] Парсинг splits.htm...")
+    start_time = time.time()
+    
+    participants_data = parse_splits_html()
+    
+    elapsed = time.time() - start_time
+    print(f"[SUCCESS] Парсинг завершен за {elapsed:.2f} секунд")
+    
+    # Сохраняем в кеш
+    try:
+        with open(CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(participants_data, f, ensure_ascii=False, indent=2)
+        print(f"[INFO] Кеш сохранен: {CACHE_FILE}")
+    except Exception as e:
+        print(f"[ERROR] Ошибка сохранения кеша: {e}")
     
     return participants_data
+
+# Убедимся, что кеш создается при старте
+print("[INFO] Инициализация кеша...")
+load_participants()
+print("[INFO] Инициализация завершена")
+
 
 def get_available_font():
     """Проверяет доступные шрифты с поддержкой кириллицы"""
@@ -420,9 +620,21 @@ body,html{{margin:0;height:100%;overflow:hidden;background:#111;color:#fff;font-
 #right{{right:0;width:450px;background:#222}}
 #left.collapsed{{width:0;overflow:hidden}}
 #right.collapsed{{width:0;overflow:hidden}}
-#left-content,#right-content{{padding:20px;height:100%;overflow-y:auto}}
-#map-container{{margin:0 450px 0 340px;height:100%;display:flex;justify-content:center;align-items:center;background:#000;transition:.4s}}
-body.collapsed-left #map-container{{margin-left:0}}body.collapsed-right #map-container{{margin-right:0}}
+#left-content, #right-content {
+    padding: 20px;
+    height: calc(100% - 120px); /* Учитываем высоту плашки */
+    overflow-y: auto;
+    padding-bottom: 80px; /* Дополнительный отступ снизу */
+}
+#map-container {
+    margin: 0 450px 0 340px;
+    height: calc(100% - 80px); /* Уменьшаем высоту на высоту плашки */
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background: #000;
+    transition: .4s;
+}
 .panel-toggle{{position:fixed;top:50%;z-index:15;background:#c40000;border:none;color:white;width:30px;height:60px;cursor:pointer;font-size:20px;font-weight:bold;display:flex;align-items:center;justify-content:center;transition:.3s}}
 .panel-toggle:hover{{background:#a00}}
 #left-toggle{{left:340px;border-radius:0 8px 8px 0}}
