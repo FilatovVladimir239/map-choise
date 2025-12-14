@@ -7,7 +7,7 @@ import json
 import math
 import urllib.parse
 from flask import Flask, render_template_string, send_from_directory, jsonify, Response, request
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 from bs4 import BeautifulSoup
 from weasyprint import HTML, CSS
 from weasyprint.text.fonts import FontConfiguration
@@ -18,10 +18,8 @@ MAP_IMAGE = "static/map.png"
 COORDS_FILE = "coordinates.txt"
 SPLITS_FILE = "splits.htm"
 CACHE_FILE = "cache_participants.json"
+CACHE_POINTS = "cache_points.json"
 GROUPS_FILE = "groups.txt"
-
-A4_WIDTH_MM = 297.0
-A4_HEIGHT_MM = 210.0
 
 points_data = None
 participants_data = None
@@ -71,24 +69,29 @@ def load_all_points():
     if points_data:
         return points_data
     
-    cache_file = "cache_points.json"
-    
-    if os.path.exists(cache_file):
+    if os.path.exists(CACHE_POINTS):
         try:
-            with open(cache_file, 'r', encoding='utf-8') as f:
-                points_data = json.load(f)
+            with open(CACHE_POINTS, 'r', encoding='utf-8') as f:
+                cached = json.load(f)
             
-            points = points_data['points']
-            map_size = tuple(points_data['map_size'])
+            points = cached['points']
+            map_size_raw = cached['map_size']
+            
+            if isinstance(map_size_raw, (list, tuple)) and len(map_size_raw) >= 2:
+                map_size = (map_size_raw[0], map_size_raw[1])
+            else:
+                raise ValueError("Неверный формат map_size")
+            
             print(f"[INFO] Координаты загружены из кеша: {len(points)} КП")
-            return (points, map_size)
-        except:
-            pass
+            points_data = (points, map_size)
+            return points_data
+        except Exception as e:
+            print(f"[WARNING] Ошибка чтения кэша координат (будет пересоздан): {e}")
     
     im = Image.open(MAP_IMAGE)
     w, h = im.size
-    px_per_mm_x = w / A4_WIDTH_MM
-    px_per_mm_y = h / A4_HEIGHT_MM
+    px_per_mm_x = w / 297.0
+    px_per_mm_y = h / 210.0
     r = 3 * max(px_per_mm_x, px_per_mm_y)
 
     points = {}
@@ -115,12 +118,12 @@ def load_all_points():
     points_data = (points, (w, h))
     
     try:
-        with open(cache_file, 'w', encoding='utf-8') as f:
+        with open(CACHE_POINTS, 'w', encoding='utf-8') as f:
             json.dump({
                 'points': points,
                 'map_size': [w, h]
             }, f, ensure_ascii=False, indent=2)
-        print(f"[INFO] Координаты сохранены в кеш: {cache_file}")
+        print(f"[INFO] Координаты сохранены в кеш: {CACHE_POINTS}")
     except Exception as e:
         print(f"[WARNING] Не удалось сохранить кеш координат: {e}")
     
@@ -372,46 +375,22 @@ body,html{{margin:0;height:100%;overflow:hidden;background:#111;color:#fff;font-
 #right{{right:0;width:450px}}
 #left.collapsed{{width:0;overflow:hidden}}
 #right.collapsed{{width:0;overflow:hidden}}
-
-/* Прокрутка внутри панелей, чтобы не уходило под футер */
-#left-content, #right-content {{
-    height: calc(100% - 80px);
-    overflow-y: auto;
-    padding: 20px;
-    box-sizing: border-box;
-}}
-
-#map-container {{
-    margin: 0 450px 80px 340px;  /* оригинальный способ — работает идеально */
-    height: calc(100% - 80px);
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    background: #000;
-    transition: .4s;
-}}
+#left-content, #right-content {{height: calc(100% - 80px); overflow-y: auto; padding: 20px; box-sizing: border-box;}}
+#map-container {{margin: 0 450px 80px 340px; height: calc(100% - 80px); display: flex; justify-content: center; align-items: center; background: #000; transition: .4s;}}
 body.collapsed-left #map-container {{margin-left:0}}
 body.collapsed-right #map-container {{margin-right:0}}
-
 .panel-toggle{{position:fixed;top:50%;z-index:15;background:#c40000;border:none;color:white;width:30px;height:60px;cursor:pointer;font-size:20px;font-weight:bold;display:flex;align-items:center;justify-content:center;transition:.3s}}
 .panel-toggle:hover{{background:#a00}}
 #left-toggle{{left:340px;border-radius:0 8px 8px 0}}
 #right-toggle{{right:450px;border-radius:8px 0 0 8px}}
 body.collapsed-left #left-toggle{{left:0;transform:rotate(180deg)}}
 body.collapsed-right #right-toggle{{right:0;transform:rotate(180deg)}}
-.panel-header{{position:relative;cursor:pointer;background:#c40000;padding:12px;border-radius:8px;margin-bottom:10px;font-weight:bold;min-height:20px}}
-.panel-header:hover{{background:#a00}}
 .group-header{{background:#333;padding:12px;border-radius:8px;cursor:pointer;font-weight:bold}}
 .group-header.open{{background:#a00}}
 .person-list{{max-height:0;overflow:hidden;transition:.4s;background:#2a2a2a;margin-top:5px;border-radius:6px}}
 .person-list.open{{max-height:2000px;padding:8px 0}}
 .person{{padding:10px 20px;cursor:pointer;border-bottom:1px solid #333}}
 .person:hover{{background:#900}}.person.active{{background:#c40000;font-weight:bold}}
-#splits-table{{width:100%;border-collapse:collapse;font-size:13px;border:1px solid #444;margin-top:10px}}
-#splits-table th,#splits-table td{{padding:6px;text-align:left;border-bottom:1px solid #444;cursor:pointer}}
-#splits-table th{{background:#333}}
-#splits-table tr:hover td{{background:#444}}
-#splits-table tr.active td{{background:#c40000 !important;color:#fff !important}}
 .kp circle,.kp polygon{{display:none}}
 .kp text{{display:none}}
 .kp.visible circle,.kp.visible polygon,.kp.visible text{{display:block}}
@@ -423,92 +402,29 @@ body.collapsed-right #right-toggle{{right:0;transform:rotate(180deg)}}
 .kp.highlighted polygon{{stroke:yellow;stroke-width:16;filter:drop-shadow(0 0 12px yellow)}}
 #print-btn{{position:fixed;bottom:90px;left:50%;transform:translateX(-50%);z-index:20;background:#c40000;border:none;color:white;padding:12px 24px;border-radius:6px;cursor:pointer;font-size:16px;font-weight:bold}}
 #print-btn:hover {{background: #a00;}}
+.footer {{position: fixed; bottom: 0; left: 0; right: 0; height: 80px; background: rgba(20,20,20,0.95); border-top: 2px solid #c40000; padding: 12px 20px; display: flex; align-items: center; z-index: 100; box-sizing: border-box;}}
+.footer-logo {{display: flex; align-items: center; gap: 15px;}}
+.footer-logo img {{height: 40px; width: auto;}}
+.footer-text {{color: #fff; font-size: 14px; text-align: right; font-style: italic; margin-left: auto; padding-left: 30px; max-width: 800px;}}
+.footer-text strong {{color: #c40000; font-weight: bold;}}
+@media (max-width: 768px) {{ .footer-text {{display: none;}} }}
 
-.footer {{
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    height: 80px;
-    background: rgba(20, 20, 20, 0.95);
-    border-top: 2px solid #c40000;
-    padding: 12px 20px;
-    display: flex;
-    align-items: center;
-    z-index: 100;
-    box-sizing: border-box;
-}}
-
-.footer-logo {{
-    display: flex;
-    align-items: center;
-    gap: 15px;
-}}
-
-.footer-logo img {{
-    height: 40px;
-    width: auto;
-}}
-
-.footer-text {{
-    color: #fff;
-    font-size: 14px;
-    text-align: right;
-    font-style: italic;
-    margin-left: auto;
-    padding-left: 30px;
-    max-width: 800px;
-}}
-
-.footer-text strong {{
-    color: #c40000;
-    font-weight: bold;
-}}
-
-@media (max-width: 768px) {{
-    .footer {{
-        justify-content: center;
-        padding: 8px 10px;
-    }}
-    .footer-text {{
-        display: none;
-    }}
-    .footer-logo {{
-        gap: 10px;
-    }}
-    .footer-logo img {{
-        height: 35px;
-    }}
-    #print-btn {{
-        bottom: 90px;
-    }}
-}}
+/* Стили для таблицы сплитов */
+.splits-table {{width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 15px; background: #333; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 10px rgba(0,0,0,0.3);}}
+.splits-table th {{background: #c40000; color: white; padding: 10px 8px; text-align: center; font-weight: bold;}}
+.splits-table td {{padding: 8px; text-align: center; border-bottom: 1px solid #444;}}
+.splits-table tr:hover td {{background: #555 !important;}}
+.splits-table .start-row td {{color: #88ff88; font-weight: bold;}}
+.splits-table .finish-row td {{background: #440000; color: #ff8888; font-weight: bold;}}
+.splits-table .split-row.active td {{background: #c40000 !important; color: white !important; font-weight: bold;}}
+.distance-summary {{margin-top: 15px; font-size: 16px; color: #ffdd88; text-align: center; font-weight: bold;}}
 </style></head><body>
-<div id="left">
-    <div id="left-content">
-        <div class="panel-header" onclick="togglePanel('left')">
-            <span>Участники</span>
-        </div>
-        <div id="accordion">{acc}</div>
-    </div>
-</div>
+<div id="left"><div id="left-content"><div class="panel-header" onclick="togglePanel('left')">Участники</div><div id="accordion">{acc}</div></div></div>
 <button id="left-toggle" class="panel-toggle" onclick="togglePanel('left')">◀</button>
-
-<div id="right">
-    <div id="right-content">
-        <div class="panel-header" onclick="togglePanel('right')">
-            <span>Сплиты</span>
-        </div>
-        <div id="splits-info">Выберите участника</div>
-    </div>
-</div>
+<div id="right"><div id="right-content"><div class="panel-header" onclick="togglePanel('right')">Сплиты</div><div id="splits-info">Выберите участника</div></div></div>
 <button id="right-toggle" class="panel-toggle" onclick="togglePanel('right')">▶</button>
-
-<div id="map-container">
-    <div id="map"><img src="data:image/png;base64,{map_b64}" id="mapimg">
-    <svg style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none">{"".join(svg)}<path id="path" fill="none" stroke="#ff3366" stroke-width="6" opacity="0.7" stroke-linecap="round"/></svg></div>
-</div>
-
+<div id="map-container"><div id="map"><img src="data:image/png;base64,{map_b64}" id="mapimg">
+<svg style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none">{"".join(svg)}<path id="path" fill="none" stroke="#ff3366" stroke-width="6" opacity="0.7" stroke-linecap="round"/></svg></div></div>
 <button id="print-btn" onclick="exportToPDF()">🖨️ Печать карты</button>
 <div class="footer">
     <div class="footer-logo">
@@ -520,7 +436,6 @@ body.collapsed-right #right-toggle{{right:0;transform:rotate(180deg)}}
         и смежных видов спорта "Импульс"
     </div>
 </div>
-
 <script>
 const points = {json.dumps(points, ensure_ascii=False)};
 const groupKps = {json.dumps(group_kps, ensure_ascii=False)};
@@ -553,40 +468,18 @@ function fitMap() {{
 }}
 function update() {{ mapDiv.style.transform = `translate(${{posX}}px,${{posY}}px) scale(${{scale}})`; }}
 
-mapDiv.addEventListener('wheel', e => {{ 
-    e.preventDefault(); 
-    scale *= e.deltaY > 0 ? 0.9 : 1.11; 
-    scale = Math.max(0.3, Math.min(20, scale)); 
-    update(); 
-}});
+mapDiv.addEventListener('wheel', e => {{ e.preventDefault(); scale *= e.deltaY > 0 ? 0.9 : 1.11; scale = Math.max(0.3, Math.min(20, scale)); update(); }});
 
 let dragging = false, sx, sy;
-mapDiv.addEventListener('mousedown', e => {{ 
-    if(e.button===0){{ 
-        dragging=true; 
-        sx=e.clientX-posX; 
-        sy=e.clientY-posY; 
-        mapDiv.style.cursor='grabbing'; 
-    }} 
-}});
-document.addEventListener('mousemove', e => {{ 
-    if(dragging){{ 
-        posX=e.clientX-sx; 
-        posY=e.clientY-sy; 
-        update(); 
-    }} 
-}});
-document.addEventListener('mouseup', () => {{ 
-    dragging = false; 
-    mapDiv.style.cursor = 'grab'; 
-}});
+mapDiv.addEventListener('mousedown', e => {{ if(e.button===0){{ dragging=true; sx=e.clientX-posX; sy=e.clientY-posY; mapDiv.style.cursor='grabbing'; }} }});
+document.addEventListener('mousemove', e => {{ if(dragging){{ posX=e.clientX-sx; posY=e.clientY-sy; update(); }} }});
+document.addEventListener('mouseup', () => {{ dragging = false; mapDiv.style.cursor = 'grab'; }});
 
 function togglePanel(side) {{
     const panel = document.getElementById(side);
     const toggleBtn = document.getElementById(side + '-toggle');
     const isCollapsed = panel.classList.toggle('collapsed');
     document.body.classList.toggle(`collapsed-${{side}}`, isCollapsed);
-    
     if (side === 'left') {{
         toggleBtn.style.transform = isCollapsed ? 'rotate(180deg)' : 'rotate(0deg)';
         toggleBtn.style.left = isCollapsed ? '0' : '340px';
@@ -594,11 +487,8 @@ function togglePanel(side) {{
         toggleBtn.style.transform = isCollapsed ? 'rotate(180deg)' : 'rotate(0deg)';
         toggleBtn.style.right = isCollapsed ? '0' : '450px';
     }}
-    
     fitMap();
 }}
-
-/* остальной JavaScript без изменений (clearMap, toggleGroup, selectRunner и т.д.) — он остался тем же, что и в предыдущей версии */
 
 function clearMap() {{
     document.querySelectorAll('.kp').forEach(g => g.classList.remove('visible','own','alien','highlighted'));
@@ -700,9 +590,7 @@ function selectRunner(el) {{
         prev = c;
     }});
     pathLine.setAttribute('d', d);
-    pathLine.setAttribute('stroke-width', '6');  
-    pathLine.setAttribute('opacity', '0.7');     
-    
+
     let totalDistance = 0;
     const distances = [];
     for (let i = 0; i < path.length - 1; i++) {{
@@ -711,47 +599,76 @@ function selectRunner(el) {{
         totalDistance += distance;
     }}
 
-    let tbl = '<table id="splits-table"><tr><th>№</th><th>КП</th><th>Перегон</th><th>Общее</th><th>(м)</th><th>Всего</th></tr>';
-    tbl += `<tr class="split-row"><td></td><td>${{startCode}}</td><td>—</td><td>0:00</td><td>—</td><td>0</td></tr>`;
-    
+    let tbl = `
+    <table class="splits-table">
+        <thead>
+            <tr>
+                <th>№</th>
+                <th>КП</th>
+                <th>Перегон</th>
+                <th>Общее время</th>
+                <th>Перегон (м)</th>
+                <th>Всего (м)</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr class="start-row">
+                <td></td>
+                <td><strong>${{startCode}}</strong></td>
+                <td>—</td>
+                <td>0:00</td>
+                <td>—</td>
+                <td>0</td>
+            </tr>`;
+
     let total = 0;
     let cumulativeDistance = 0;
-    
+
     for (let i = 1; i < path.length - 1; i++) {{
         const kp = path[i];
         const legTime = (i-1 < leg.length) ? leg[i-1] : '-';
         const legDistance = distances[i-1];
         cumulativeDistance += legDistance;
-        
-        if (legTime && legTime !== '-' && legTime.includes(':')) total += timeToSec(legTime);
-        
-        tbl += `<tr onclick="highlightKP('${{kp}}')" class="split-row">
-            <td>${{i}}</td>
-            <td>${{kp}}</td>
-            <td>${{legTime}}</td>
-            <td>${{total>0?secToTime(total):'—'}}</td>
-            <td>${{legDistance}}</td>
-            <td>${{cumulativeDistance}}</td>
-        </tr>`;
+
+        if (legTime && legTime !== '-' && legTime.includes(':')) {{
+            total += timeToSec(legTime);
+        }}
+
+        tbl += `
+            <tr class="split-row" onclick="highlightKP('${{kp}}')">
+                <td>${{i}}</td>
+                <td><strong>${{kp}}</strong></td>
+                <td>${{legTime}}</td>
+                <td>${{total > 0 ? secToTime(total) : '—'}}</td>
+                <td>${{legDistance}}</td>
+                <td>${{cumulativeDistance}}</td>
+            </tr>`;
     }}
-    
-    let fl = '—', ft = result;
+
     const finishDistance = distances[distances.length - 1] || 0;
     cumulativeDistance += finishDistance;
-    
-    if (result.includes(':')) {{ 
-        const rs = timeToSec(result); 
-        if (rs >= total) fl = secToTime(rs-total); 
+
+    let fl = '—';
+    if (result.includes(':')) {{
+        const rs = timeToSec(result);
+        if (rs >= total) fl = secToTime(rs - total);
     }}
-    
-    tbl += `<tr class="split-row">
-        <td></td>
-        <td style="font-weight:bold;color:#ff6666">Ф1</td>
-        <td style="font-weight:bold">${{fl}}</td>
-        <td style="font-weight:bold;color:#ff6666">${{ft}}</td>
-        <td style="font-weight:bold">${{finishDistance}}</td>
-        <td style="font-weight:bold;color:#ff6666">${{cumulativeDistance}}</td>
-    </tr></table>`;
+
+    tbl += `
+            <tr class="finish-row">
+                <td></td>
+                <td><strong style="color:#ff4444;">Ф1</strong></td>
+                <td><strong>${{fl}}</strong></td>
+                <td><strong style="color:#ff4444;">${{result}}</strong></td>
+                <td><strong>${{finishDistance}}</strong></td>
+                <td><strong style="color:#ff4444;">${{cumulativeDistance}}</strong></td>
+            </tr>
+        </tbody>
+    </table>
+
+    <div class="distance-summary">
+        Примерная дистанция: <strong>${{cumulativeDistance}} м</strong> (масштаб ≈ 1:4000)
+    </div>`;
     
     splitsDiv.innerHTML = tbl;
 }}
@@ -761,11 +678,21 @@ function highlightKP(id) {{
     document.querySelectorAll('.split-row').forEach(r => r.classList.remove('active'));
     const el = document.getElementById('kp_' + id);
     if (el) el.classList.add('highlighted');
-    document.querySelectorAll('.split-row').forEach(r => {{ if (r.cells[1].textContent === id) r.classList.add('active'); }});
+    document.querySelectorAll('.split-row').forEach(r => {{ 
+        if (r.cells[1] && r.cells[1].textContent.trim() === id) r.classList.add('active'); 
+    }});
 }}
 
-function timeToSec(t) {{ if (!t || t === '-' || !t.includes(':')) return 0; const a = t.split(':').map(Number); return a.length === 3 ? a[0]*3600 + a[1]*60 + (a[2]||0) : a[0]*60 + a[1]; }}
-function secToTime(s) {{ if (s < 3600) return Math.floor(s/60) + ':' + (s%60).toString().padStart(2,'0'); const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=s%60; return h+':'+m.toString().padStart(2,'0')+':'+sec.toString().padStart(2,'0'); }}
+function timeToSec(t) {{ 
+    if (!t || t === '-' || !t.includes(':')) return 0; 
+    const a = t.split(':').map(Number); 
+    return a.length === 3 ? a[0]*3600 + a[1]*60 + (a[2]||0) : a[0]*60 + a[1]; 
+}}
+function secToTime(s) {{ 
+    if (s < 3600) return Math.floor(s/60) + ':' + (s%60).toString().padStart(2,'0'); 
+    const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=s%60; 
+    return h+':'+m.toString().padStart(2,'0')+':'+sec.toString().padStart(2,'0'); 
+}}
 
 function exportToPDF() {{
     if (!currentRunnerData) {{
@@ -782,13 +709,6 @@ function exportToPDF() {{
         }};
     }});
 
-    const pathPoints = currentRunnerData.path.map(kp => {{
-        if (points[kp]) {{
-            return [points[kp].cx, points[kp].cy];
-        }}
-        return null;
-    }}).filter(point => point !== null);
-
     const exportData = {{
         name: currentRunnerData.name,
         group: currentRunnerData.group,
@@ -797,8 +717,6 @@ function exportToPDF() {{
         leg_times: currentRunnerData.leg_times,
         timestamp: new Date().toLocaleString('ru-RU'),
         visibleKPs: visibleKPs,
-        pathData: pathLine.getAttribute('d'),
-        pathPoints: pathPoints,
         points: points,
         runnerGroupKps: currentGroupKps || []
     }};
@@ -815,7 +733,6 @@ function exportToPDF() {{
     .then(blob => {{
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
-        a.style.display = 'none';
         a.href = url;
         a.download = `маршрут_${{currentRunnerData.name.replace(/[^a-z0-9а-яё]/gi, '_')}}.pdf`;
         document.body.appendChild(a);
@@ -824,16 +741,12 @@ function exportToPDF() {{
         document.body.removeChild(a);
     }})
     .catch(error => {{
-        console.error('Ошибка при создании PDF:', error);
-        alert('Ошибка при создании PDF файла: ' + error.message);
+        console.error('Ошибка:', error);
+        alert('Ошибка при создании PDF: ' + error.message);
     }});
 }}
 
-window.onload = () => {{ 
-    fitMap(); 
-    window.onresize = fitMap;
-    setTimeout(showAllKPs, 100);
-}};
+window.onload = () => {{ fitMap(); window.onresize = fitMap; setTimeout(showAllKPs, 100); }};
 </script></body></html>'''
 
     with open("static/data.json", "w", encoding="utf-8") as f:
@@ -841,12 +754,8 @@ window.onload = () => {{
 
     return render_template_string(html)
 
-# Остальные маршруты /export-pdf и /data.json остаются без изменений (те же, что в предыдущей версии)
-
 @app.route('/export-pdf', methods=['POST'])
 def export_pdf():
-    # (тот же код, что был раньше — без изменений)
-    # для экономии места не дублирую, но он должен быть вставлен полностью из предыдущей версии
     try:
         data = request.get_json()
         map_b64 = get_map_base64()
@@ -855,12 +764,12 @@ def export_pdf():
         result = data['result']
         timestamp = data['timestamp']
         path = data['path']
-        leg_times = data['leg_times']
         points = data['points']
         visible_kps_data = data['visibleKPs']
         runner_group_kps = data['runnerGroupKps']
 
-        points_all, (map_width, map_height) = load_all_points()
+        points_all, map_size = load_all_points()
+        map_width, map_height = map_size
 
         SCALE_FACTOR = 4
 
@@ -872,7 +781,7 @@ def export_pdf():
             if kp1 in points and kp2 in points:
                 dx = points[kp2]['mm_x'] - points[kp1]['mm_x']
                 dy = points[kp2]['mm_y'] - points[kp1]['mm_y']
-                dist_mm = (dx*dx + dy*dy) ** 0.5
+                dist_mm = math.sqrt(dx*dx + dy*dy)
                 dist_m = round(dist_mm * SCALE_FACTOR)
                 distances.append(dist_m)
                 total_distance += dist_m
@@ -891,14 +800,14 @@ def export_pdf():
                 size = r * 1.5
                 polygon = f"{cx},{cy-size} {cx-size},{cy+size} {cx+size},{cy+size}"
                 svg_parts.append(f'''
-                    <polygon points="{polygon}" fill="none" stroke="#ff0000" stroke-width="8"/>
-                    <text x="{cx + size + 10}" y="{cy + size + 10}" font-size="40" fill="#ff0000" font-weight="bold">{kp_id}</text>
+                    <polygon points="{polygon}" fill="none" stroke="#ff0000" stroke-width="10"/>
+                    <text x="{cx + size + 15}" y="{cy + size + 15}" font-size="48" fill="#ff0000" font-weight="bold">{kp_id}</text>
                 ''')
             elif kp_id == 'Ф1':
                 svg_parts.append(f'''
-                    <circle cx="{cx}" cy="{cy}" r="{r*1.5}" fill="none" stroke="#ff0000" stroke-width="8"/>
-                    <circle cx="{cx}" cy="{cy}" r="{r*0.8}" fill="none" stroke="#ff0000" stroke-width="8"/>
-                    <text x="{cx + r*1.5 + 10}" y="{cy + r*1.5 + 10}" font-size="40" fill="#ff0000" font-weight="bold">Ф1</text>
+                    <circle cx="{cx}" cy="{cy}" r="{r*1.8}" fill="none" stroke="#ff0000" stroke-width="10"/>
+                    <circle cx="{cx}" cy="{cy}" r="{r*1.0}" fill="none" stroke="#ff0000" stroke-width="10"/>
+                    <text x="{cx + r*1.8 + 15}" y="{cy + r*1.8 + 15}" font-size="48" fill="#ff0000" font-weight="bold">Ф1</text>
                 ''')
             else:
                 if kp_info and kp_info.get('isOwn'):
@@ -909,8 +818,8 @@ def export_pdf():
                     color = "#ff8888"
 
                 svg_parts.append(f'''
-                    <circle cx="{cx}" cy="{cy}" r="{r}" fill="none" stroke="{color}" stroke-width="6"/>
-                    <text x="{cx + r + 8}" y="{cy + r + 8}" font-size="36" fill="{color}" font-weight="bold">{kp_id}</text>
+                    <circle cx="{cx}" cy="{cy}" r="{r*1.2}" fill="none" stroke="{color}" stroke-width="8"/>
+                    <text x="{cx + r*1.2 + 12}" y="{cy + r*1.2 + 12}" font-size="42" fill="{color}" font-weight="bold">{kp_id}</text>
                 ''')
 
         path_d = ""
@@ -925,28 +834,73 @@ def export_pdf():
                 path_d += f" L {x},{y}"
             prev = (x, y)
 
-        html_content = f"""<!DOCTYPE html>
-<html>
-<!-- (тот же HTML для PDF, что был раньше) -->
-</html>"""
+        logo_path = os.path.abspath('static/logo.png')
+        logo_url = f"file://{logo_path.replace(os.sep, '/')}"
 
-        # (весь код генерации PDF без изменений)
+        html_content = f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <title>Маршрут {runner}</title>
+    <style>
+        @page {{ size: A4 landscape; margin: 10mm; }}
+        body {{ margin: 0; padding: 0; font-family: 'DejaVu Sans', Arial, sans-serif; background: white; height: 100vh; display: flex; align-items: center; justify-content: center; }}
+        .container {{ position: relative; width: 100%; max-width: 277mm; height: auto; aspect-ratio: {map_width} / {map_height}; max-height: 190mm; margin: auto; box-shadow: 0 0 10px rgba(0,0,0,0.2); }}
+        .map {{ width: 100%; height: 100%; object-fit: contain; }}
+        /* Удалена надпись "Снежная тропа — маршрут" */
+        .info {{ position: absolute; top: 10px; right: 20px; font-size: 26px; color: #000; background: rgba(255,255,255,0.9); padding: 12px 16px; border-radius: 8px; z-index: 10; text-align: right; max-width: 45%; }}
+        .timestamp {{ position: absolute; top: 140px; right: 20px; font-size: 18px; color: #555; background: rgba(255,255,255,0.8); padding: 8px 12px; border-radius: 6px; z-index: 10; }}
+        .footer {{ position: absolute; bottom: 20px; left: 20px; right: 20px; display: flex; align-items: center; justify-content: space-between; z-index: 10; background: rgba(255,255,255,0.8); padding: 10px; border-radius: 8px; }}
+        .footer-logo {{ display: flex; align-items: center; gap: 15px; }}
+        .footer-logo img {{ height: 60px; }}
+        .footer-text {{ font-size: 18px; color: #333; font-style: italic; }}
+        svg {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 5; pointer-events: none; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <img src="data:image/png;base64,{map_b64}" class="map">
+        
+        <!-- Информация об участнике теперь справа -->
+        <div class="info">
+            <strong>{runner}</strong><br>
+            Группа: {group}<br>
+            Результат: {result}<br>
+            Дистанция: ≈ {total_distance} м (масштаб 1:{int(1000 * SCALE_FACTOR)})
+        </div>
+        
+        <div class="timestamp">Распечатано: {timestamp}</div>
+        
+        <svg viewBox="0 0 {map_width} {map_height}">
+            {"".join(svg_parts)}
+            <path d="{path_d}" fill="none" stroke="#ff3366" stroke-width="16" stroke-linecap="round" opacity="0.9"/>
+        </svg>
+    </div>
+</body>
+</html>"""
 
         font_config = FontConfiguration()
         html_obj = HTML(string=html_content, base_url=os.path.dirname(os.path.abspath(__file__)))
-        css = CSS(string="@font-face {{ font-family: 'DejaVu Sans'; src: url('https://github.com/dejavu-fonts/dejavu-fonts.github.io/raw/master/dejavu-fonts-ttf-2.37/ttf/DejaVuSans.ttf'); }} body {{ font-family: 'DejaVu Sans', sans-serif; }}", font_config=font_config)
+        css = CSS(string="""
+            @font-face {
+                font-family: 'DejaVu Sans';
+                src: url('https://github.com/dejavu-fonts/dejavu-fonts.github.io/raw/master/dejavu-fonts-ttf-2.37/ttf/DejaVuSans.ttf');
+            }
+            body { font-family: 'DejaVu Sans', sans-serif; }
+        """, font_config=font_config)
 
         buffer = io.BytesIO()
         html_obj.write_pdf(buffer, stylesheets=[css], font_config=font_config)
         buffer.seek(0)
 
-        safe_name = "".join(c if c.isalnum() or c in " _-()" else "_" for c in runner)
-        encoded_name = urllib.parse.quote(f"маршрут_{safe_name}.pdf")
+        safe_name = "".join(c if c.isalnum() or c in " _-()" else "_" for c in runner).strip()
+        filename = f"маршрут_{safe_name}.pdf"
+        encoded_name = urllib.parse.quote(filename)
 
         return Response(
             buffer.getvalue(),
             mimetype="application/pdf",
-            headers={{"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_name}"}}
+            headers={'Content-Disposition': f"attachment; filename*=UTF-8''{encoded_name}"}
         )
 
     except Exception as e:
