@@ -359,7 +359,7 @@ def index():
         open_class = "open" if g == first else ""
         items = ""
         for i, r in enumerate(runners):
-            items += f'<div class="person" data-id="{i}" data-group="{g}" onclick="selectRunner(this)">{r["name"]}</div>'
+            items += f'<div class="person" data-id="{i}" data-group="{g}" onclick="selectRunner(this, event)">{r["name"]}</div>'
         
         if not runners:
             items = '<div class="person" style="color:#888;font-style:italic;">Нет участников</div>'
@@ -388,16 +388,14 @@ body.collapsed-right #right-toggle{{right:0;transform:rotate(180deg)}}
 .group-header{{background:#333;padding:12px;border-radius:8px;cursor:pointer;font-weight:bold}}
 .group-header.open{{background:#a00}}
 .person-list{{max-height:0;overflow:hidden;transition:max-height 0.6s cubic-bezier(0.4, 0, 0.2, 1);background:#2a2a2a;margin-top:5px;border-radius:6px}}
-.person-list.open{{max-height:15000px;padding:8px 0}}
+.person-list.open{{max-height:8000px;padding:8px 0}}
 .person{{padding:10px 20px;cursor:pointer;border-bottom:1px solid #333}}
 .person:hover{{background:#900}}.person.active{{background:#c40000;font-weight:bold}}
 .kp circle,.kp polygon{{display:none}}
 .kp text{{display:none}}
 .kp.visible circle,.kp.visible polygon,.kp.visible text{{display:block}}
-.kp.own circle{{stroke:#ff0000;stroke-width:10}}
-.kp.own polygon{{stroke:#ff0000;stroke-width:10}}
-.kp.alien circle{{stroke:#0088ff;stroke-width:10}}
-.kp.alien polygon{{stroke:#0088ff;stroke-width:10}}
+.kp.own circle,.kp.own polygon{{stroke:#ff0000;stroke-width:10}}
+.kp.alien circle,.kp.alien polygon{{stroke:#0088ff;stroke-width:10}}
 .kp.highlighted circle{{stroke:yellow;stroke-width:16;filter:drop-shadow(0 0 12px yellow)}}
 .kp.highlighted polygon{{stroke:yellow;stroke-width:16;filter:drop-shadow(0 0 12px yellow)}}
 #print-btn{{position:fixed;bottom:90px;left:50%;transform:translateX(-50%);z-index:20;background:#c40000;border:none;color:white;padding:12px 24px;border-radius:6px;cursor:pointer;font-size:16px;font-weight:bold}}
@@ -418,13 +416,21 @@ body.collapsed-right #right-toggle{{right:0;transform:rotate(180deg)}}
 .splits-table .finish-row td {{background: #440000; color: #ff8888; font-weight: bold;}}
 .splits-table .split-row.active td {{background: #c40000 !important; color: white !important; font-weight: bold;}}
 .distance-summary {{margin-top: 15px; font-size: 16px; color: #ffdd88; text-align: center; font-weight: bold;}}
+#legend {{margin:15px 0; padding:10px; background:#333; border-radius:8px;}}
 </style></head><body>
 <div id="left"><div id="left-content"><div class="panel-header" onclick="togglePanel('left')">Участники</div><div id="accordion">{acc}</div></div></div>
 <button id="left-toggle" class="panel-toggle" onclick="togglePanel('left')">◀</button>
-<div id="right"><div id="right-content"><div class="panel-header" onclick="togglePanel('right')">Сплиты</div><div id="splits-info">Выберите участника</div></div></div>
+<div id="right"><div id="right-content">
+    <div class="panel-header" onclick="togglePanel('right')">Сплиты</div>
+    <div id="legend" style="display:none;"></div>
+    <div id="splits-info">Выберите участника<br><small style="color:#aaa;">(Ctrl/Cmd + клик — множественный выбор)</small></div>
+    <div style="text-align:center;margin-top:20px;">
+        <button onclick="clearMap()" style="background:#900;padding:8px 16px;border:none;color:white;border-radius:6px;cursor:pointer;font-size:14px;">Очистить выбор</button>
+    </div>
+</div></div>
 <button id="right-toggle" class="panel-toggle" onclick="togglePanel('right')">▶</button>
 <div id="map-container"><div id="map"><img src="data:image/png;base64,{map_b64}" id="mapimg">
-<svg style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none">{"".join(svg)}<path id="path" fill="none" stroke="#ff3366" stroke-width="6" opacity="0.7" stroke-linecap="round"/></svg></div></div>
+<svg style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none">{"".join(svg)}</svg></div></div>
 <button id="print-btn" onclick="exportToPDF()">🖨️ Печать карты</button>
 <div class="footer">
     <div class="footer-logo">
@@ -443,18 +449,18 @@ const groupStarts = {json.dumps(group_starts, ensure_ascii=False)};
 let participants = null;
 const mapDiv = document.getElementById('map');
 const img = document.getElementById('mapimg');
-const pathLine = document.getElementById('path');
+const svg = document.querySelector('svg');
 const splitsDiv = document.getElementById('splits-info');
+const legendDiv = document.getElementById('legend');
 let scale = 1, posX = 0, posY = 0;
-let selectedRunner = null;
-let currentRunnerData = null;
-let currentGroupKps = null;
+let selectedRunners = [];
+let activeRunnerForSplits = null;
+const routeColors = ['#ff3366','#33ff66','#3366ff','#ffcc33','#cc33ff','#ff6633','#66ffcc','#ffff33'];
 
 fetch('data.json').then(r => r.json()).then(d => participants = d);
 
 function showAllKPs() {{
     document.querySelectorAll('.kp').forEach(g => g.classList.add('visible'));
-    pathLine.setAttribute('d', '');
 }}
 
 function fitMap() {{
@@ -492,13 +498,12 @@ function togglePanel(side) {{
 
 function clearMap() {{
     document.querySelectorAll('.kp').forEach(g => g.classList.remove('visible','own','alien','highlighted'));
-    document.querySelectorAll('.split-row').forEach(r => r.classList.remove('active'));
-    pathLine.setAttribute('d', '');
-    splitsDiv.innerHTML = 'Выберите участника';
+    document.querySelectorAll('.runner-path').forEach(p => p.remove());
+    splitsDiv.innerHTML = 'Выберите участника<br><small style="color:#aaa;">(Ctrl/Cmd + клик — множественный выбор)</small>';
     document.querySelectorAll('.person').forEach(p => p.classList.remove('active'));
-    selectedRunner = null;
-    currentRunnerData = null;
-    currentGroupKps = null;
+    selectedRunners = [];
+    activeRunnerForSplits = null;
+    legendDiv.style.display = 'none';
     showAllKPs();
 }}
 
@@ -509,7 +514,6 @@ function toggleGroup(h, group) {{
     if (!o) {{
         h.classList.add('open');
         h.nextElementSibling.classList.add('open');
-        currentGroupKps = groupKps[group] || [];
         const startCode = groupStarts[group] || 'С1';
         document.querySelectorAll('.kp').forEach(g => {{
             const id = g.id.replace('kp_', '');
@@ -520,7 +524,6 @@ function toggleGroup(h, group) {{
             }}
         }});
     }} else {{
-        currentGroupKps = null;
         showAllKPs();
     }}
 }}
@@ -539,147 +542,190 @@ function calculateDistance(kp1, kp2) {{
     return distanceMeters;
 }}
 
-function selectRunner(el) {{
-    if (!participants) return;
-    clearMap();
-    el.classList.add('active');
-    selectedRunner = el;
-    const group = el.dataset.group;
-    const id = parseInt(el.dataset.id);
-    const r = participants[group][id];
-    currentRunnerData = r;
-    currentGroupKps = groupKps[group] || [];
-    const path = r.path;
-    const leg = r.leg_times;
-    const result = r.result;
-    const ownKps = new Set(groupKps[group] || []);
-    const taken = new Set(path.filter(k => k !== groupStarts[group] && k !== 'Ф1'));
+function drawAllPaths() {{
+    document.querySelectorAll('.runner-path').forEach(p => p.remove());
+    selectedRunners.forEach((sr, idx) => {{
+        const path = sr.data.path;
+        const color = routeColors[sr.colorIndex % routeColors.length];
+        let d = '';
+        let prev = null;
+        path.forEach(kp => {{
+            if (!points[kp]) return;
+            const c = {{x: points[kp].cx, y: points[kp].cy, r: points[kp].r || 30}};
+            if (prev) {{
+                const dx = c.x - prev.x, dy = c.y - prev.y, dist = Math.hypot(dx,dy);
+                if (dist > prev.r + c.r + 10) {{
+                    const ex = prev.x + dx*(prev.r+10)/dist, ey = prev.y + dy*(prev.r+10)/dist;
+                    const ix = c.x - dx*(c.r+10)/dist, iy = c.y - dy*(c.r+10)/dist;
+                    d += ` M ${{ex}},${{ey}} L ${{ix}},${{iy}}`;
+                }}
+            }}
+            prev = c;
+        }});
+        if (d) {{
+            const pathEl = document.createElementNS("http://www.w3.org/2000/svg", "path");
+            pathEl.setAttribute('d', d);
+            pathEl.setAttribute('fill', 'none');
+            pathEl.setAttribute('stroke', color);
+            pathEl.setAttribute('stroke-width', '8');
+            pathEl.setAttribute('opacity', '0.85');
+            pathEl.setAttribute('stroke-linecap', 'round');
+            pathEl.classList.add('runner-path');
+            pathEl.style.filter = 'drop-shadow(0 0 6px ' + color + ')';
+            svg.appendChild(pathEl);
+        }}
+    }});
+}}
 
-    const startCode = groupStarts[group] || 'С1';
-    
+function showKPsForSelected() {{
+    const allOwn = new Set();
+    const allTaken = new Set();
+    const allStarts = new Set(); // собираем старты выбранных участников
+
+    selectedRunners.forEach(sr => {{
+        const group = sr.data.group;
+        const startCode = groupStarts[group] || 'С1';
+        allStarts.add(startCode); // добавляем только нужный старт
+
+        const ownKps = groupKps[group] || [];
+        ownKps.forEach(k => allOwn.add(k));
+        sr.data.path.forEach(k => {{
+            if (k !== startCode && k !== 'Ф1') allTaken.add(k);
+        }});
+    }});
+
     document.querySelectorAll('.kp').forEach(g => {{
         const id = g.id.replace('kp_', '');
-        if (id === startCode || id === 'Ф1') {{
-            g.classList.add('visible');
-        }} else if (ownKps.has(id)) {{
-            g.classList.add('visible');
-            if (taken.has(id)) g.classList.add('own');
-        }} else if (taken.has(id)) {{
-            g.classList.add('visible');
-            g.classList.add('alien');
-        }} else {{
-            g.classList.remove('visible');
-        }}
-    }});
+        g.classList.remove('visible', 'own', 'alien');
 
-    let d = '', prev = null;
-    path.forEach(k => {{
-        if (!points[k]) return;
-        let c = {{x: points[k].cx, y: points[k].cy, r: points[k].r || 30}};
-        if (k === startCode) c.r = c.r * 1.2;
-        if (k === 'Ф1') c.r = c.r * 1.3;
-        
-        if (prev) {{
-            const dx = c.x-prev.x, dy = c.y-prev.y, dist = Math.hypot(dx,dy);
-            if (dist > prev.r + c.r + 10) {{
-                const ex = prev.x + dx*(prev.r+5)/dist, ey = prev.y + dy*(prev.r+5)/dist;
-                const ix = c.x - dx*(c.r+5)/dist, iy = c.y - dy*(c.r+5)/dist;
-                d += ` M ${{ex}},${{ey}} L ${{ix}},${{iy}}`;
+        // Показываем: старты выбранных групп, финиш, свои и взятые КП
+        if (allStarts.has(id) || id === 'Ф1' || allOwn.has(id) || allTaken.has(id)) {{
+            g.classList.add('visible');
+
+            if (allTaken.has(id) && !allOwn.has(id)) {{
+                g.classList.add('alien');
+            }} else if (allOwn.has(id)) {{
+                g.classList.add('own');
             }}
         }}
-        prev = c;
     }});
-    pathLine.setAttribute('d', d);
+}}
+
+function buildSplitsTable(runner) {{
+    if (!runner) return '<div>Нет данных</div>';
+    const path = runner.path;
+    const leg = runner.leg_times;
+    const result = runner.result;
+    const startCode = path[0];
 
     let totalDistance = 0;
     const distances = [];
     for (let i = 0; i < path.length - 1; i++) {{
-        const distance = calculateDistance(path[i], path[i+1]);
-        distances.push(distance);
-        totalDistance += distance;
+        const dist = calculateDistance(path[i], path[i+1]);
+        distances.push(dist);
+        totalDistance += dist;
     }}
 
     let tbl = `
     <table class="splits-table">
-        <thead>
-            <tr>
-                <th>№</th>
-                <th>КП</th>
-                <th>Перегон</th>
-                <th>Общее время</th>
-                <th>Перегон (м)</th>
-                <th>Всего (м)</th>
-            </tr>
-        </thead>
+        <thead><tr><th>№</th><th>КП</th><th>Перегон</th><th>Общее время</th><th>Перегон (м)</th><th>Всего (м)</th></tr></thead>
         <tbody>
-            <tr class="start-row">
-                <td></td>
-                <td><strong>${{startCode}}</strong></td>
-                <td>—</td>
-                <td>0:00</td>
-                <td>—</td>
-                <td>0</td>
-            </tr>`;
+            <tr class="start-row"><td></td><td><strong>${{startCode}}</strong></td><td>—</td><td>0:00</td><td>—</td><td>0</td></tr>`;
 
-    let total = 0;
-    let cumulativeDistance = 0;
+    let totalSec = 0;
+    let cumDist = 0;
 
     for (let i = 1; i < path.length - 1; i++) {{
         const kp = path[i];
         const legTime = (i-1 < leg.length) ? leg[i-1] : '-';
-        const legDistance = distances[i-1];
-        cumulativeDistance += legDistance;
+        const legDist = distances[i-1];
+        cumDist += legDist;
 
         if (legTime && legTime !== '-' && legTime.includes(':')) {{
-            total += timeToSec(legTime);
+            totalSec += timeToSec(legTime);
         }}
 
-        tbl += `
-            <tr class="split-row" onclick="highlightKP('${{kp}}')">
-                <td>${{i}}</td>
-                <td><strong>${{kp}}</strong></td>
-                <td>${{legTime}}</td>
-                <td>${{total > 0 ? secToTime(total) : '—'}}</td>
-                <td>${{legDistance}}</td>
-                <td>${{cumulativeDistance}}</td>
-            </tr>`;
+        tbl += `<tr class="split-row" onclick="highlightKP('${{kp}}')">
+            <td>${{i}}</td><td><strong>${{kp}}</strong></td><td>${{legTime}}</td>
+            <td>${{totalSec > 0 ? secToTime(totalSec) : '—'}}</td>
+            <td>${{legDist}}</td><td>${{cumDist}}</td>
+        </tr>`;
     }}
 
-    const finishDistance = distances[distances.length - 1] || 0;
-    cumulativeDistance += finishDistance;
+    const finishDist = distances[distances.length - 1] || 0;
+    cumDist += finishDist;
 
-    let fl = '—';
+    let finishLeg = '—';
     if (result.includes(':')) {{
-        const rs = timeToSec(result);
-        if (rs >= total) fl = secToTime(rs - total);
+        const resSec = timeToSec(result);
+        if (resSec >= totalSec) finishLeg = secToTime(resSec - totalSec);
     }}
 
-    tbl += `
-            <tr class="finish-row">
-                <td></td>
-                <td><strong style="color:#ff4444;">Ф1</strong></td>
-                <td><strong>${{fl}}</strong></td>
-                <td><strong style="color:#ff4444;">${{result}}</strong></td>
-                <td><strong>${{finishDistance}}</strong></td>
-                <td><strong style="color:#ff4444;">${{cumulativeDistance}}</strong></td>
-            </tr>
-        </tbody>
-    </table>
+    tbl += `<tr class="finish-row">
+        <td></td><td><strong style="color:#ff4444;">Ф1</strong></td>
+        <td><strong>${{finishLeg}}</strong></td><td><strong style="color:#ff4444;">${{result}}</strong></td>
+        <td><strong>${{finishDist}}</strong></td><td><strong style="color:#ff4444;">${{cumDist}}</strong></td>
+    </tr></tbody></table>
+    <div class="distance-summary">Примерная дистанция: <strong>${{cumDist}} м</strong> (масштаб ≈ 1:4000)</div>`;
 
-    <div class="distance-summary">
-        Примерная дистанция: <strong>${{cumulativeDistance}} м</strong> (масштаб ≈ 1:4000)
-    </div>`;
-    
-    splitsDiv.innerHTML = tbl;
+    return tbl;
+}}
+
+function selectRunner(el, event) {{
+    if (!participants) return;
+
+    const group = el.dataset.group;
+    const id = parseInt(el.dataset.id);
+    const runnerData = participants[group][id];
+
+    const existingIndex = selectedRunners.findIndex(r => r.el === el);
+
+    if (event.ctrlKey || event.metaKey) {{
+        // Множественный выбор
+        if (existingIndex !== -1) {{
+            selectedRunners.splice(existingIndex, 1);
+            el.classList.remove('active');
+        }} else {{
+            const colorIndex = selectedRunners.length;
+            selectedRunners.push({{el, data: runnerData, colorIndex}});
+            el.classList.add('active');
+        }}
+    }} else {{
+        // Обычный клик — заменяем выбор
+        clearMap();
+        selectedRunners = [{{el, data: runnerData, colorIndex: 0}}];
+        el.classList.add('active');
+    }}
+
+    if (selectedRunners.length > 0) {{
+        activeRunnerForSplits = runnerData;
+        splitsDiv.innerHTML = buildSplitsTable(activeRunnerForSplits);
+        drawAllPaths();
+        showKPsForSelected();
+        updateLegend();
+    }} else {{
+        clearMap();
+    }}
+}}
+
+function updateLegend() {{
+    if (selectedRunners.length === 0) {{
+        legendDiv.style.display = 'none';
+        return;
+    }}
+    legendDiv.style.display = 'block';
+    legendDiv.innerHTML = '<strong>Выбрано:</strong><br>' + selectedRunners.map(sr => 
+        `<div style="margin:4px 0;"><span style="display:inline-block;width:20px;height:4px;background:${{routeColors[sr.colorIndex % routeColors.length]}};vertical-align:middle;margin-right:8px;"></span>${{sr.data.name}}</div>`
+    ).join('');
 }}
 
 function highlightKP(id) {{
     document.querySelectorAll('.kp').forEach(g => g.classList.remove('highlighted'));
     document.querySelectorAll('.split-row').forEach(r => r.classList.remove('active'));
-    const el = document.getElementById('kp_' + id);
-    if (el) el.classList.add('highlighted');
-    document.querySelectorAll('.split-row').forEach(r => {{ 
-        if (r.cells[1] && r.cells[1].textContent.trim() === id) r.classList.add('active'); 
+    const kpEl = document.getElementById('kp_' + id);
+    if (kpEl) kpEl.classList.add('highlighted');
+    document.querySelectorAll('.split-row').forEach(r => {{
+        if (r.cells[1] && r.cells[1].textContent.trim() === id) r.classList.add('active');
     }});
 }}
 
@@ -689,36 +735,26 @@ function timeToSec(t) {{
     return a.length === 3 ? a[0]*3600 + a[1]*60 + (a[2]||0) : a[0]*60 + a[1]; 
 }}
 function secToTime(s) {{ 
-    if (s < 3600) return Math.floor(s/60) + ':' + (s%60).toString().padStart(2,'0'); 
+    if (s < 3600) return Math.floor(s/60).toString().padStart(2,'0') + ':' + (s%60).toString().padStart(2,'0'); 
     const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=s%60; 
     return h+':'+m.toString().padStart(2,'0')+':'+sec.toString().padStart(2,'0'); 
 }}
 
 function exportToPDF() {{
-    if (!currentRunnerData) {{
-        alert('Сначала выберите участника для печати его маршрута');
+    if (selectedRunners.length === 0 || !activeRunnerForSplits) {{
+        alert('Сначала выберите хотя бы одного участника');
         return;
     }}
 
-    const visibleKPs = Array.from(document.querySelectorAll('.kp.visible')).map(kp => {{
-        const id = kp.id.replace('kp_', '');
-        return {{
-            id: id,
-            isOwn: kp.classList.contains('own'),
-            isAlien: kp.classList.contains('alien')
-        }};
-    }});
-
     const exportData = {{
-        name: currentRunnerData.name,
-        group: currentRunnerData.group,
-        path: currentRunnerData.path,
-        result: currentRunnerData.result,
-        leg_times: currentRunnerData.leg_times,
+        name: activeRunnerForSplits.name,
+        group: activeRunnerForSplits.group,
+        path: activeRunnerForSplits.path,
+        result: activeRunnerForSplits.result,
+        leg_times: activeRunnerForSplits.leg_times,
         timestamp: new Date().toLocaleString('ru-RU'),
-        visibleKPs: visibleKPs,
         points: points,
-        runnerGroupKps: currentGroupKps || []
+        runnerGroupKps: groupKps[activeRunnerForSplits.group] || []
     }};
 
     fetch('/export-pdf', {{
@@ -734,16 +770,13 @@ function exportToPDF() {{
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `маршрут_${{currentRunnerData.name.replace(/[^a-z0-9а-яё]/gi, '_')}}.pdf`;
+        a.download = `маршрут_${{activeRunnerForSplits.name.replace(/[^a-z0-9а-яё]/gi, '_')}}.pdf`;
         document.body.appendChild(a);
         a.click();
         window.URL.revokeObjectURL(url);
         document.body.removeChild(a);
     }})
-    .catch(error => {{
-        console.error('Ошибка:', error);
-        alert('Ошибка при создании PDF: ' + error.message);
-    }});
+    .catch(err => alert('Ошибка создания PDF: ' + err.message));
 }}
 
 window.onload = () => {{ fitMap(); window.onresize = fitMap; setTimeout(showAllKPs, 100); }};
@@ -756,6 +789,7 @@ window.onload = () => {{ fitMap(); window.onresize = fitMap; setTimeout(showAllK
 
 @app.route('/export-pdf', methods=['POST'])
 def export_pdf():
+    # (оставлен без изменений — печатает последнего выбранного участника)
     try:
         data = request.get_json()
         map_b64 = get_map_base64()
@@ -765,7 +799,6 @@ def export_pdf():
         timestamp = data['timestamp']
         path = data['path']
         points = data['points']
-        visible_kps_data = data['visibleKPs']
         runner_group_kps = data['runnerGroupKps']
 
         points_all, map_size = load_all_points()
@@ -792,8 +825,7 @@ def export_pdf():
         for kp_id, p in points.items():
             cx, cy, r = p['cx'], p['cy'], p.get('r', 20)
 
-            kp_info = next((k for k in visible_kps_data if k['id'] == kp_id), None)
-            if kp_id not in ('С1', 'С2', 'Ф1') and not kp_info:
+            if kp_id not in path and kp_id not in ('С1', 'С2', 'Ф1') and kp_id not in runner_group_kps:
                 continue
 
             if kp_id == path[0]:
@@ -810,13 +842,9 @@ def export_pdf():
                     <text x="{cx + r*1.8 + 15}" y="{cy + r*1.8 + 15}" font-size="48" fill="#ff0000" font-weight="bold">Ф1</text>
                 ''')
             else:
-                if kp_info and kp_info.get('isOwn'):
-                    color = "#ff0000"
-                elif kp_info and kp_info.get('isAlien'):
+                color = "#ff0000" if kp_id in runner_group_kps else "#0066ff"
+                if kp_id in path and kp_id not in runner_group_kps:
                     color = "#0066ff"
-                else:
-                    color = "#ff8888"
-
                 svg_parts.append(f'''
                     <circle cx="{cx}" cy="{cy}" r="{r*1.2}" fill="none" stroke="{color}" stroke-width="8"/>
                     <text x="{cx + r*1.2 + 12}" y="{cy + r*1.2 + 12}" font-size="42" fill="{color}" font-weight="bold">{kp_id}</text>
@@ -847,7 +875,6 @@ def export_pdf():
         body {{ margin: 0; padding: 0; font-family: 'DejaVu Sans', Arial, sans-serif; background: white; height: 100vh; display: flex; align-items: center; justify-content: center; }}
         .container {{ position: relative; width: 100%; max-width: 277mm; height: auto; aspect-ratio: {map_width} / {map_height}; max-height: 190mm; margin: auto; box-shadow: 0 0 10px rgba(0,0,0,0.2); }}
         .map {{ width: 100%; height: 100%; object-fit: contain; }}
-        /* Удалена надпись "Снежная тропа — маршрут" */
         .info {{ position: absolute; top: 10px; right: 20px; font-size: 26px; color: #000; background: rgba(255,255,255,0.9); padding: 12px 16px; border-radius: 8px; z-index: 10; text-align: right; max-width: 45%; }}
         .timestamp {{ position: absolute; top: 140px; right: 20px; font-size: 18px; color: #555; background: rgba(255,255,255,0.8); padding: 8px 12px; border-radius: 6px; z-index: 10; }}
         .footer {{ position: absolute; bottom: 20px; left: 20px; right: 20px; display: flex; align-items: center; justify-content: space-between; z-index: 10; background: rgba(255,255,255,0.8); padding: 10px; border-radius: 8px; }}
@@ -860,17 +887,13 @@ def export_pdf():
 <body>
     <div class="container">
         <img src="data:image/png;base64,{map_b64}" class="map">
-        
-        <!-- Информация об участнике теперь справа -->
         <div class="info">
             <strong>{runner}</strong><br>
             Группа: {group}<br>
             Результат: {result}<br>
             Дистанция: ≈ {total_distance} м (масштаб 1:{int(1000 * SCALE_FACTOR)})
         </div>
-        
         <div class="timestamp">Распечатано: {timestamp}</div>
-        
         <svg viewBox="0 0 {map_width} {map_height}">
             {"".join(svg_parts)}
             <path d="{path_d}" fill="none" stroke="#ff3366" stroke-width="16" stroke-linecap="round" opacity="0.9"/>
@@ -914,4 +937,3 @@ def data_json():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
-
