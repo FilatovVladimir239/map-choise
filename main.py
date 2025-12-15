@@ -387,8 +387,8 @@ body.collapsed-left #left-toggle{{left:0;transform:rotate(180deg)}}
 body.collapsed-right #right-toggle{{right:0;transform:rotate(180deg)}}
 .group-header{{background:#333;padding:12px;border-radius:8px;cursor:pointer;font-weight:bold}}
 .group-header.open{{background:#a00}}
-.person-list{{max-height:0;overflow:hidden;transition:.4s;background:#2a2a2a;margin-top:5px;border-radius:6px}}
-.person-list.open{{max-height:2000px;padding:8px 0}}
+.person-list{{max-height:0;overflow:hidden;transition:max-height 0.6s cubic-bezier(0.4, 0, 0.2, 1);background:#2a2a2a;margin-top:5px;border-radius:6px}}
+.person-list.open{{max-height:15000px;padding:8px 0}}
 .person{{padding:10px 20px;cursor:pointer;border-bottom:1px solid #333}}
 .person:hover{{background:#900}}.person.active{{background:#c40000;font-weight:bold}}
 .kp circle,.kp polygon{{display:none}}
@@ -914,3 +914,4 @@ def data_json():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
+
